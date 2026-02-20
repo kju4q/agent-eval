@@ -19,6 +19,7 @@ env/
 # Reports & artifacts
 reports/
 *.pdf
+runs/
 
 # Misc
 .DS_Store
