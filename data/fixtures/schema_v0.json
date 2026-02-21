@@ -1,0 +1,51 @@
+{
+  "version": "case-study-v0",
+  "id": "string",
+  "title": "string",
+  "created_at": "ISO-8601 timestamp",
+  "agent": {
+    "name": "string",
+    "version": "string",
+    "run_mode": "string"
+  },
+  "task": {
+    "product_name": "string",
+    "product_variant": "string or null",
+    "budget_usd": 0,
+    "currency": "USD",
+    "allowed_retailers": ["Amazon", "Best Buy", "Apple"],
+    "rules": {
+      "allow_third_party": false,
+      "allow_refurbished": false,
+      "require_full_set": true
+    },
+    "canonical_listings": [
+      {
+        "retailer": "Amazon",
+        "url": "https://...",
+        "listing_id": "B0CHWRXH8B",
+        "listing_id_type": "ASIN"
+      }
+    ]
+  },
+  "agent_output": {
+    "raw_text": "string",
+    "captured_at": "ISO-8601 timestamp",
+    "source": "string"
+  },
+  "evidence": [
+    {
+      "retailer": "Amazon",
+      "url": "https://...",
+      "price_usd": 0,
+      "availability": "string or null",
+      "seller": "string or null",
+      "timestamp": "ISO-8601 timestamp",
+      "variant_match": true,
+      "listing_id": "B0CHWRXH8B",
+      "listing_id_type": "ASIN",
+      "notes": "string or null"
+    }
+  ],
+  "notes": "string or null"
+}
