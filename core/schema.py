@@ -96,17 +96,19 @@ class TaskSpec:
 
 @dataclass(frozen=True)
 class AgentOutput:
-    raw_text: str
+    raw_text: Optional[str]
     captured_at: ISO8601Format
     source: Optional[str]
+    status: Optional[str]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AgentOutput":
-        raw_text = _require_str(data, "raw_text")
+        raw_text = _opt_str(data, "raw_text")
         captured_at = _require_str(data, "captured_at")
         _parse_iso8601(captured_at)
         source = _opt_str(data, "source")
-        return cls(raw_text=raw_text, captured_at=captured_at, source=source)
+        status = _opt_str(data, "status")
+        return cls(raw_text=raw_text, captured_at=captured_at, source=source, status=status)
 
 
 @dataclass(frozen=True)

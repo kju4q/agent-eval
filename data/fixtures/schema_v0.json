@@ -29,9 +29,10 @@
     ]
   },
   "agent_output": {
-    "raw_text": "string",
+    "raw_text": "string or null",
     "captured_at": "ISO-8601 timestamp",
-    "source": "string"
+    "source": "string",
+    "status": "string or null"
   },
   "evidence": [
     {

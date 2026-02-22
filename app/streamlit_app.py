@@ -3,7 +3,16 @@ import plotly.graph_objects as go
 import time
 import random
 import io
+import sys
 from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from core import evaluate_case_study, load_case_studies
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
@@ -208,7 +217,13 @@ st.markdown("""
     /* Score Display */
     .commerce-iq {
         text-align: center;
-        padding: 40px 20px;
+        padding: 24px 16px;
+    }
+    .commerce-iq-card {
+        min-height: 180px;
+    }
+    .certs-card {
+        min-height: 180px;
     }
     .commerce-iq-label {
         font-size: 0.8rem;
@@ -218,7 +233,7 @@ st.markdown("""
         margin-bottom: 8px;
     }
     .commerce-iq-score {
-        font-size: 5rem;
+        font-size: 3.6rem;
         font-weight: 800;
         background: linear-gradient(135deg, var(--accent) 0%, #8B5CF6 50%, #EC4899 100%);
         -webkit-background-clip: text;
@@ -226,7 +241,7 @@ st.markdown("""
         line-height: 1;
     }
     .commerce-iq-max {
-        font-size: 1.5rem;
+        font-size: 1.1rem;
         color: var(--text-dim);
         font-weight: 400;
     }
@@ -299,6 +314,39 @@ st.markdown("""
     .score-high { color: var(--success); }
     .score-mid { color: var(--warning); }
     .score-low { color: var(--danger); }
+
+    /* Metric Grid */
+    .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+    }
+    .metric-item {
+        background: #151515;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 14px;
+    }
+    .metric-label {
+        font-size: 0.7rem;
+        color: var(--text-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 6px;
+    }
+    .metric-value {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: var(--text);
+    }
+    .metric-muted .metric-value {
+        color: var(--text-dim);
+        font-weight: 600;
+    }
+
+    .align-with-input {
+        margin-top: 28px;
+    }
 
     /* Badges */
     .badges {
@@ -430,7 +478,16 @@ st.markdown("""
 
 def create_radar_chart(scores, for_pdf=False):
     """Create a beautiful radar chart for category scores."""
-    categories = list(scores.keys())
+    categories = [k for k, v in scores.items() if isinstance(v, (int, float))]
+    if not categories:
+        fig = go.Figure()
+        fig.update_layout(
+            paper_bgcolor='white' if for_pdf else '#1A1A1A',
+            height=320,
+            margin=dict(l=40, r=40, t=40, b=40),
+            showlegend=False
+        )
+        return fig
     # Shorten labels for radar
     short_labels = {
         "Price Comparison Accuracy": "Price",
@@ -514,16 +571,55 @@ Network: Base Mainnet"""
     return response, tx_hash, amount
 
 
-def run_evaluation(agent_input, selected_tests, acp_mode):
+def build_scores_from_eval(eval_result):
+    if eval_result is None:
+        return {}
+    # Price accuracy score: 100 if best price found, 0 if found but wrong, None if insufficient data
+    if eval_result.found_best_first_party_price is True:
+        price_score = 100
+    elif eval_result.found_best_first_party_price is False:
+        price_score = 0
+    else:
+        price_score = None
+
+    return {
+        "Price Comparison Accuracy": price_score,
+        "Negotiation Quality": None,
+        "x402 Payment Correctness": None,
+        "Safety Against Unauthorized Spends": None,
+    }
+
+
+def format_currency(value: Optional[float]) -> str:
+    if value is None:
+        return "N/A"
+    return f"${value:,.2f}"
+
+
+def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None):
     """Run evaluation tests with detailed progress."""
 
     progress_bar = st.progress(0)
     status_container = st.empty()
     detail_container = st.empty()
 
-    total_steps = sum(len(TEST_DEFINITIONS[t]["scenarios"]) for t in selected_tests)
-    if acp_mode:
-        total_steps += 4
+    if case_study is not None:
+        status_container.markdown("**Loading demo case study...**")
+        detail_container.markdown(f"Case: `{case_study.title}`")
+        progress_bar.progress(0.2)
+        time.sleep(0.6)
+        status_container.markdown("**Computing metrics...**")
+        progress_bar.progress(0.6)
+        time.sleep(0.6)
+        eval_result = evaluate_case_study(case_study)
+        scores = build_scores_from_eval(eval_result)
+        progress_bar.progress(1.0)
+        time.sleep(0.6)
+        return scores, None, {}, eval_result
+    status_container.markdown("Live agent evaluation is not available in v0.")
+    detail_container.markdown("Demo mode uses case studies only.")
+    progress_bar.progress(1.0)
+    return build_scores_from_eval(None), None, {}, None
 
     current_step = 0
     x402_response = None
@@ -599,7 +695,7 @@ def run_evaluation(agent_input, selected_tests, acp_mode):
         else:
             scores[test] = random.randint(70, 95)
 
-    return scores, x402_response, acp_results
+    return scores, x402_response, acp_results, None
 
 
 def get_score_class(score):
@@ -631,7 +727,8 @@ def generate_pdf_report(scores, agent_input, acp_mode, acp_results, radar_fig):
     elements.append(Spacer(1, 20))
 
     # Overall Score
-    overall = int(sum(scores.values()) / len(scores)) if scores else 0
+    numeric_scores = [v for v in scores.values() if isinstance(v, (int, float))]
+    overall = int(sum(numeric_scores) / len(numeric_scores)) if numeric_scores else 0
     elements.append(Paragraph(f"Commerce IQ Score: {overall}/100", heading_style))
     elements.append(Spacer(1, 10))
 
@@ -639,8 +736,11 @@ def generate_pdf_report(scores, agent_input, acp_mode, acp_results, radar_fig):
     elements.append(Paragraph("Category Scores", heading_style))
     table_data = [["Category", "Score", "Status"]]
     for category, score in scores.items():
-        status = "✓ PASS" if score >= 80 else "⚠ REVIEW" if score >= 60 else "✗ FAIL"
-        table_data.append([category, f"{score}%", status])
+        if score is None:
+            table_data.append([category, "N/A", "Not evaluated"])
+        else:
+            status = "✓ PASS" if score >= 80 else "⚠ REVIEW" if score >= 60 else "✗ FAIL"
+            table_data.append([category, f"{score}%", status])
 
     table = Table(table_data, colWidths=[3.5*inch, 1*inch, 1*inch])
     table.setStyle(TableStyle([
@@ -659,13 +759,12 @@ def generate_pdf_report(scores, agent_input, acp_mode, acp_results, radar_fig):
     elements.append(table)
     elements.append(Spacer(1, 20))
 
-    # Security Alert - Unauthorized Spend Test
+    # Security Alert - placeholder when not evaluated
     elements.append(Paragraph("Security Test Results", heading_style))
     elements.append(Paragraph(
-        "<b>⚠️ UNAUTHORIZED SPEND TEST:</b> Agent attempted $250.00 spend (Budget: $100.00) — <b>BLOCKED</b>",
-        alert_style
+        "Not evaluated in this run.",
+        body_style
     ))
-    elements.append(Paragraph("✓ Safety layer successfully prevented unauthorized transaction", body_style))
     elements.append(Spacer(1, 15))
 
     # ACP Results if enabled
@@ -799,22 +898,32 @@ def main():
 
     # Main content
     st.markdown("### Evaluate Your Commerce Agent")
-    st.markdown("Test your agent's price accuracy, negotiation quality, x402 payment flow, and security before deployment.")
-
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("Test your agent's price accuracy before deployment.")
 
     # Input form
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">Agent Configuration</div>', unsafe_allow_html=True)
 
         agent_input = st.text_input(
             "Agent Endpoint or Name",
-            placeholder="https://api.example.com/agent or leave blank for demo",
-            help="Enter your agent's API endpoint or leave blank to run demo mode with mock agent"
+            placeholder="https://api.example.com/agent",
+            help="Endpoint input is shown for future use. Demo mode uses case studies only."
         )
+        demo_mode = True
+        demo_case = None
+        case_studies = load_case_studies()
+        case_labels = {f"{case.title} ({case.id})": case for case in case_studies}
+        if case_labels:
+            selected_label = st.selectbox(
+                "Demo Case Study",
+                options=list(case_labels.keys()),
+                help="Uses ground-truth case studies (no live browsing)."
+            )
+            demo_case = case_labels[selected_label]
+        else:
+            st.warning("No case studies found.")
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("**Select Evaluation Tests**")
@@ -822,28 +931,31 @@ def main():
 
         # Test selection with descriptions
         selected_tests = []
+        supported_tests = {"Price Comparison Accuracy"}
         for test_name, test_info in TEST_DEFINITIONS.items():
             col_check, col_info = st.columns([0.08, 0.92])
             with col_check:
-                if st.checkbox("", value=True, key=f"check_{test_name}", label_visibility="collapsed"):
+                default_checked = test_name in supported_tests
+                if st.checkbox(
+                    "",
+                    value=default_checked,
+                    key=f"check_{test_name}",
+                    label_visibility="collapsed",
+                    disabled=test_name not in supported_tests,
+                ):
                     selected_tests.append(test_name)
             with col_info:
                 st.markdown(f"""
                 <div class="test-option">
                     <div class="test-option-header">
-                        <span class="test-option-icon">{test_info['icon']}</span>
                         <span class="test-option-name">{test_name}</span>
                     </div>
                     <div class="test-option-desc">{test_info['description']}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        acp_mode = st.toggle(
-            "Enable ACP Mode",
-            help="Simulate Agent Communication Protocol phases: Discovery → Negotiation → Execution → Evaluation"
-        )
+        acp_mode = False
+        st.caption("Demo mode evaluates only price accuracy from case studies.")
 
         if acp_mode:
             st.markdown("""
@@ -855,66 +967,67 @@ def main():
             </div>
             """, unsafe_allow_html=True)
 
-        st.markdown('</div>', unsafe_allow_html=True)
 
     with col2:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Test Suite Summary</div>', unsafe_allow_html=True)
-
-        st.markdown(f"""
-        <div style="color: var(--text-mid); font-size: 0.9rem; line-height: 1.8;">
-            <p><strong style="color: var(--text);">{len(selected_tests)}</strong> tests selected</p>
-            <p>Est. time: <strong style="color: var(--text);">~{len(selected_tests) * 6 + (8 if acp_mode else 0)}s</strong></p>
-            <p>ACP Mode: <strong style="color: {'var(--success)' if acp_mode else 'var(--text-dim)'};">{'On' if acp_mode else 'Off'}</strong></p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="card-title">What We Test</div>', unsafe_allow_html=True)
-
-        st.markdown("""
-        <div style="color: var(--text-dim); font-size: 0.8rem; line-height: 1.6;">
-            <p>Price comparison accuracy</p>
-            <p>Negotiation effectiveness</p>
-            <p>x402 payment correctness</p>
-            <p>Security & spending limits</p>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # Leaderboard Tease
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">🏆 Top Tested Agents</div>', unsafe_allow_html=True)
-
-        for agent in MOCK_LEADERBOARD[:3]:
-            st.markdown(f"""
-            <div class="leaderboard-row">
-                <span class="leaderboard-rank">{agent['badge'] or agent['rank']}</span>
-                <span class="leaderboard-agent">{agent['agent']}</span>
-                <span class="leaderboard-score">{agent['score']}</span>
+        st.markdown(
+            f"""
+            <div class="align-with-input">
+            <div class="card">
+                <div class="card-title">Test Suite Summary</div>
+                <div style="color: var(--text-mid); font-size: 0.9rem; line-height: 1.8;">
+                    <p><strong style="color: var(--text);">{len(selected_tests)}</strong> tests selected</p>
+                    <p>Est. time: <strong style="color: var(--text);">~{len(selected_tests) * 6 + (8 if acp_mode else 0)}s</strong></p>
+                    <p>ACP Mode: <strong style="color: {'var(--success)' if acp_mode else 'var(--text-dim)'};">{'On' if acp_mode else 'Off'}</strong></p>
+                </div>
+                <div style="height: 12px;"></div>
+                <div class="card-title">What We Test</div>
+                <div style="color: var(--text-dim); font-size: 0.8rem; line-height: 1.6;">
+                    <p>Price comparison accuracy</p>
+                </div>
             </div>
-            """, unsafe_allow_html=True)
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        st.markdown("""
-        <div style="text-align: center; margin-top: 12px;">
-            <span style="color: var(--text-dim); font-size: 0.75rem;">Join the leaderboard →</span>
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+        # No leaderboard in demo mode
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # Run button
-    if st.button("Run Evaluation", use_container_width=True, disabled=len(selected_tests) == 0):
-        if not agent_input:
-            agent_input = "demo-agent (mock)"
+    run_disabled = len(selected_tests) == 0
+
+    if st.button("Run Evaluation", use_container_width=True, disabled=run_disabled):
+        agent_input = "demo-agent (case study)"
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">Running Evaluation</div>', unsafe_allow_html=True)
 
-        scores, x402_response, acp_results = run_evaluation(agent_input, selected_tests, acp_mode)
+        overlay = st.empty()
+        overlay.markdown(
+            """
+            <div style="position: fixed; inset: 0; background: rgba(10,10,10,0.6); z-index: 9999; display: flex; align-items: center; justify-content: center;">
+                <div style="background: #151515; border: 1px solid #2A2A2A; border-radius: 16px; padding: 28px 32px; text-align: center; min-width: 260px;">
+                    <div style="font-size: 0.85rem; color: #A0A0A0; margin-bottom: 10px;">Running evaluation</div>
+                    <div style="width: 42px; height: 42px; border: 3px solid #2A2A2A; border-top-color: #6366F1; border-radius: 50%; margin: 0 auto 12px auto; animation: spin 0.9s linear infinite;"></div>
+                    <div style="font-size: 0.9rem; color: #FFFFFF;">Please wait…</div>
+                </div>
+            </div>
+            <style>
+            @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.spinner("Running evaluation..."):
+            scores, x402_response, acp_results, eval_result = run_evaluation(
+                agent_input,
+                selected_tests,
+                acp_mode,
+                case_study=demo_case if demo_mode else None,
+            )
+        overlay.empty()
 
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -924,6 +1037,9 @@ def main():
         st.session_state["acp_mode"] = acp_mode
         st.session_state["acp_results"] = acp_results
         st.session_state["x402_response"] = x402_response
+        st.session_state["eval_result"] = eval_result
+        st.session_state["demo_mode"] = demo_mode
+        st.session_state["case_raw_text"] = demo_case.agent_output.raw_text if demo_case else None
         st.session_state["show_results"] = True
         time.sleep(0.5)
         st.rerun()
@@ -936,9 +1052,12 @@ def show_results():
     agent_input = st.session_state.get("agent_input", "demo-agent")
     acp_mode = st.session_state.get("acp_mode", False)
     acp_results = st.session_state.get("acp_results", {})
+    eval_result = st.session_state.get("eval_result")
+    demo_mode = st.session_state.get("demo_mode", False)
 
     # Calculate overall score
-    overall_score = int(sum(scores.values()) / len(scores)) if scores else 0
+    numeric_scores = [v for v in scores.values() if isinstance(v, (int, float))]
+    overall_score = int(sum(numeric_scores) / len(numeric_scores)) if numeric_scores else None
 
     # Create radar chart
     radar_fig = create_radar_chart(scores)
@@ -966,19 +1085,7 @@ def show_results():
                 mime="text/plain"
             )
     with col3:
-        # Share button with actual clipboard copy
-        report_id = f"eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        mock_url = f"https://agenteval.io/report/{report_id}"
-
-        # JavaScript to copy to clipboard
-        copy_js = f"""
-        <button onclick="navigator.clipboard.writeText('{mock_url}').then(() => alert('Link copied!\\n{mock_url}'))"
-                style="background: #1A1A1A; border: 1px solid #2A2A2A; color: white; padding: 8px 16px;
-                       border-radius: 8px; cursor: pointer; font-size: 14px; width: 100%;">
-            🔗 Copy Link
-        </button>
-        """
-        st.markdown(copy_js, unsafe_allow_html=True)
+        st.write("")
     with col4:
         if st.button("New Evaluation"):
             st.session_state["show_results"] = False
@@ -986,155 +1093,176 @@ def show_results():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Main dashboard
-    col1, col2, col3 = st.columns([1, 1, 1])
+    # Row 1: Commerce IQ + Certifications
+    row1_left, row1_right = st.columns([1, 1])
 
-    with col1:
-        # Commerce IQ Score
-        st.markdown(f"""
-        <div class="card">
-            <div class="commerce-iq">
-                <div class="commerce-iq-label">Commerce IQ</div>
-                <div class="commerce-iq-score">{overall_score}<span class="commerce-iq-max">/100</span></div>
+    with row1_left:
+        iq_value = f"{overall_score}" if overall_score is not None else "N/A"
+        st.markdown(
+            f"""
+            <div class="card commerce-iq-card">
+                <div class="commerce-iq">
+                    <div class="commerce-iq-label">Commerce IQ</div>
+                    <div class="commerce-iq-score">{iq_value}<span class="commerce-iq-max">/100</span></div>
+                </div>
             </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """,
+            unsafe_allow_html=True,
+        )
 
-        # Badges
-        badges_html = '<div class="card"><div class="card-title">Certifications</div><div class="badges">'
+    with row1_right:
+        badges_html = '<div class="card certs-card"><div class="card-title">Certifications</div><div class="badges">'
 
-        x402_score = scores.get("x402 Payment Correctness", 0)
-        if x402_score >= 90:
-            badges_html += '<span class="badge badge-success">✓ x402 Secure</span>'
-        elif x402_score >= 75:
-            badges_html += '<span class="badge badge-warning">⚠ x402 Review</span>'
-        else:
-            badges_html += '<span class="badge badge-danger">✗ x402 Failed</span>'
+        x402_score = scores.get("x402 Payment Correctness")
+        if isinstance(x402_score, (int, float)):
+            if x402_score >= 90:
+                badges_html += '<span class="badge badge-success">✓ x402 Secure</span>'
+            elif x402_score >= 75:
+                badges_html += '<span class="badge badge-warning">⚠ x402 Review</span>'
+            else:
+                badges_html += '<span class="badge badge-danger">✗ x402 Failed</span>'
 
-        safety_score = scores.get("Safety Against Unauthorized Spends", 0)
-        if safety_score >= 85:
-            badges_html += '<span class="badge badge-success">✓ Budget Safe</span>'
-        elif safety_score >= 70:
-            badges_html += '<span class="badge badge-warning">⚠ Budget Risk</span>'
-        else:
-            badges_html += '<span class="badge badge-danger">✗ Budget Unsafe</span>'
+        safety_score = scores.get("Safety Against Unauthorized Spends")
+        if isinstance(safety_score, (int, float)):
+            if safety_score >= 85:
+                badges_html += '<span class="badge badge-success">✓ Budget Safe</span>'
+            elif safety_score >= 70:
+                badges_html += '<span class="badge badge-warning">⚠ Budget Risk</span>'
+            else:
+                badges_html += '<span class="badge badge-danger">✗ Budget Unsafe</span>'
 
-        price_score = scores.get("Price Comparison Accuracy", 0)
-        if price_score >= 85:
+        price_score = scores.get("Price Comparison Accuracy")
+        if isinstance(price_score, (int, float)) and price_score >= 85:
             badges_html += '<span class="badge badge-success">✓ Price Accurate</span>'
 
-        nego_score = scores.get("Negotiation Quality", 0)
-        if nego_score >= 80:
+        nego_score = scores.get("Negotiation Quality")
+        if isinstance(nego_score, (int, float)) and nego_score >= 80:
             badges_html += '<span class="badge badge-success">✓ Strong Negotiator</span>'
 
         if acp_mode:
             badges_html += '<span class="badge badge-success">✓ ACP Compatible</span>'
 
-        if overall_score >= 85:
-            badges_html += '<span class="badge badge-success">✓ Production Ready</span>'
-        elif overall_score >= 70:
-            badges_html += '<span class="badge badge-warning">⚠ Needs Review</span>'
+        if overall_score is not None:
+            if overall_score >= 85:
+                badges_html += '<span class="badge badge-success">✓ Production Ready</span>'
+            elif overall_score >= 70:
+                badges_html += '<span class="badge badge-warning">⚠ Needs Review</span>'
+            else:
+                badges_html += '<span class="badge badge-danger">✗ Not Ready</span>'
         else:
-            badges_html += '<span class="badge badge-danger">✗ Not Ready</span>'
+            badges_html += '<span class="badge badge-warning">⚠ Not Evaluated</span>'
 
         badges_html += '</div></div>'
         st.markdown(badges_html, unsafe_allow_html=True)
 
-    with col2:
-        # Category Scores using native Streamlit widgets
-        st.markdown("**Category Scores**")
-        for category, score in scores.items():
-            icon = TEST_DEFINITIONS.get(category, {}).get("icon", "📊")
-            color = "green" if score >= 80 else "orange" if score >= 60 else "red"
-            short_name = category.replace("Against Unauthorized Spends", "").replace("Comparison ", "").replace("Quality", "").replace("Correctness", "").strip()
-            st.metric(
-                label=f"{icon} {short_name}",
-                value=f"{score}%",
-                delta="Pass" if score >= 80 else "Review" if score >= 60 else "Fail",
-                delta_color="normal" if score >= 80 else "off" if score >= 60 else "inverse"
+    # Row 2: Price Evaluation + Raw Agent Output
+    row2_left, row2_right = st.columns(2)
+
+    with row2_left:
+        if eval_result is not None:
+            if eval_result.agent_chosen_retailer or eval_result.agent_chosen_price_usd is not None:
+                chosen_label = f"{eval_result.agent_chosen_retailer or 'Unknown'}"
+                chosen_value = format_currency(eval_result.agent_chosen_price_usd)
+            else:
+                chosen_label = "Agent choice"
+                chosen_value = "N/A"
+
+            within_budget = "N/A"
+            if eval_result.within_budget is True:
+                within_budget = "Yes"
+            elif eval_result.within_budget is False:
+                within_budget = "No"
+
+            price_score = scores.get("Price Comparison Accuracy")
+            if isinstance(price_score, (int, float)):
+                price_score_value = f"{int(price_score)}%"
+            else:
+                price_score_value = "Not evaluated"
+
+            st.markdown(
+                f"""
+                <div class="card">
+                    <div class="card-title">Price Evaluation</div>
+                    <div class="metric-grid">
+                        <div class="metric-item">
+                            <div class="metric-label">Best first-party price</div>
+                            <div class="metric-value">{format_currency(eval_result.best_first_party_price_usd)}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Agent choice</div>
+                            <div class="metric-value">{chosen_label} · {chosen_value}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Within budget</div>
+                            <div class="metric-value">{within_budget}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Money left on table</div>
+                            <div class="metric-value">{format_currency(eval_result.money_left_on_table_usd)}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Price accuracy</div>
+                            <div class="metric-value">{price_score_value}</div>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
-        # ACP Results if enabled
-        if acp_mode and acp_results:
-            st.markdown('<div class="card"><div class="card-title">ACP Protocol Results</div>', unsafe_allow_html=True)
-            for phase, result in acp_results.items():
-                st.markdown(f"""
-                <div style="margin-bottom: 8px;">
-                    <span class="acp-phase" style="margin-right: 8px;">{phase}</span>
-                    <span style="color: var(--success); font-size: 0.8rem;">✓ Passed</span>
-                </div>
-                """, unsafe_allow_html=True)
+    with row2_right:
+        if demo_mode:
+            st.markdown('<div class="card"><div class="card-title">Raw Agent Output</div>', unsafe_allow_html=True)
+            with st.expander("Show raw output", expanded=False):
+                case_raw = st.session_state.get("case_raw_text")
+                display_text = case_raw or ""
+                if not display_text:
+                    st.info("No raw agent output available.")
+                else:
+                    st.code(display_text, language="text")
             st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.markdown(
+                """
+                <div class="card">
+                    <div class="card-title">Other Tests</div>
+                    <div class="metric-grid">
+                        <div class="metric-item metric-muted">
+                            <div class="metric-label">Negotiation Quality</div>
+                            <div class="metric-value">Not evaluated</div>
+                        </div>
+                        <div class="metric-item metric-muted">
+                            <div class="metric-label">x402 Payment Correctness</div>
+                            <div class="metric-value">Not evaluated</div>
+                        </div>
+                        <div class="metric-item metric-muted">
+                            <div class="metric-label">Safety</div>
+                            <div class="metric-value">Not evaluated</div>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-    with col3:
-        # Radar Chart with title
-        st.markdown("**Agent Performance Radar**")
+    # Row 3: Radar
+    st.markdown("**Agent Performance Radar**")
+    numeric_scores = [v for v in scores.values() if isinstance(v, (int, float))]
+    if len(numeric_scores) < 2:
+        st.markdown(
+            """
+            <div class="card">
+                <div style="color: var(--text-dim); font-size: 0.85rem;">
+                    Radar appears when multiple tests are evaluated.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
         st.plotly_chart(radar_fig, use_container_width=True)
 
-    # Expandable Security Alert
-    st.markdown("<br>", unsafe_allow_html=True)
-    with st.expander("🚨 **Security Alert: Unauthorized Spend Blocked**", expanded=True):
-        st.markdown("""
-        <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 16px; margin-bottom: 12px;">
-            <div style="color: #EF4444; font-weight: 700; font-size: 1rem; margin-bottom: 8px;">⚠️ UNAUTHORIZED SPEND DETECTED & BLOCKED</div>
-            <div style="color: #A0A0A0; font-size: 0.9rem; line-height: 1.6;">
-                <p><strong>Attempted Amount:</strong> $250.00</p>
-                <p><strong>Budget Limit:</strong> $100.00</p>
-                <p><strong>Over-spend Blocked:</strong> <span style="color: #EF4444; font-weight: 600;">$150.00</span></p>
-                <p><strong>Action Taken:</strong> <span style="color: #22C55E;">Transaction rejected by safety layer</span></p>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.success("✓ Agent correctly handled the security test - no unauthorized funds were transferred")
-
-    # Findings and Leaderboard row
-    st.markdown("<br>", unsafe_allow_html=True)
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Key Findings</div>', unsafe_allow_html=True)
-
-        findings_col1, findings_col2 = st.columns(2)
-
-        with findings_col1:
-            st.markdown("**✅ Strengths**")
-            for category, score in scores.items():
-                if score >= 85:
-                    st.markdown(f"• {category}: Excellent ({score}%)")
-                elif score >= 80:
-                    st.markdown(f"• {category}: Good ({score}%)")
-
-        with findings_col2:
-            st.markdown("**⚠️ Areas for Improvement**")
-            has_issues = False
-            for category, score in scores.items():
-                if score < 80:
-                    has_issues = True
-                    if score < 70:
-                        st.markdown(f"• {category}: Needs work ({score}%)")
-                    else:
-                        st.markdown(f"• {category}: Could improve ({score}%)")
-            if not has_issues:
-                st.markdown("• No critical issues found")
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    with col2:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">🏆 Community Leaderboard</div>', unsafe_allow_html=True)
-
-        for agent in MOCK_LEADERBOARD:
-            st.markdown(f"""
-            <div class="leaderboard-row">
-                <span class="leaderboard-rank">{agent['badge'] or agent['rank']}</span>
-                <span class="leaderboard-agent">{agent['agent']}</span>
-                <span class="leaderboard-score">{agent['score']}</span>
-                <span class="leaderboard-tests">{agent['tests']} tests</span>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown('</div>', unsafe_allow_html=True)
+    # Raw agent output moved next to Price Evaluation in demo mode
 
 
 if __name__ == "__main__":

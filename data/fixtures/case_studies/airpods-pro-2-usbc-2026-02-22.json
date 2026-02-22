@@ -1,0 +1,92 @@
+{
+  "version": "case-study-v0",
+  "id": "airpods-pro-2-usbc-2026-02-22",
+  "title": "AirPods Pro (2nd Gen, USB-C case) — budget $200, first‑party only",
+  "created_at": "2026-02-22T11:42:00+01:00",
+  "agent": {
+    "name": "OpenClaw",
+    "version": "2026.2.6-3",
+    "run_mode": "web_fetch"
+  },
+  "task": {
+    "product_name": "AirPods Pro (2nd Gen)",
+    "product_variant": "USB-C case",
+    "budget_usd": 200,
+    "currency": "USD",
+    "allowed_retailers": [
+      "Amazon",
+      "Best Buy",
+      "Apple"
+    ],
+    "rules": {
+      "allow_third_party": false,
+      "allow_refurbished": false,
+      "require_full_set": true
+    },
+    "canonical_listings": [
+      {
+        "retailer": "Amazon",
+        "url": "https://www.amazon.com/dp/B0CHWRXH8B",
+        "listing_id": "B0CHWRXH8B",
+        "listing_id_type": "ASIN"
+      },
+      {
+        "retailer": "Best Buy",
+        "url": "https://www.bestbuy.com/product/apple-airpods-pro-2-wireless-active-noise-cancelling-earbuds-with-hearing-aid-feature-white/JJGCQ88C8X",
+        "listing_id": "10413470",
+        "listing_id_type": "SKU"
+      },
+      {
+        "retailer": "Apple",
+        "url": "https://www.apple.com/shop/buy-airpods/airpods-pro-2",
+        "listing_id": "airpods-pro-2",
+        "listing_id_type": "slug"
+      }
+    ]
+  },
+  "agent_output": {
+    "raw_text": "Here's what I could verify from the exact URLs only:\n\nPer-URL check\nAmazon - https://www.amazon.com/dp/B0CHWRXH8B\n\nPrice (USD): Not exposed in fetched page content (could not verify live price)\nAvailability: Not clearly exposed in fetched content\nSeller: Amazon.com detected, but \"Sold by Amazon.com\" not explicitly confirmed in captured content\nVariant match: Yes (AirPods Pro 2nd gen USB-C full set, ASIN matches)\nASIN/SKU: B0CHWRXH8B\nBest Buy - https://www.bestbuy.com/site/apple-airpods-pro-2nd-generation-with-magsafe-case-usbc-white/6447382.p?skuId=6447382\n\nPrice (USD): Could not retrieve (request repeatedly aborted from this environment)\nAvailability: Could not retrieve\nSeller: Best Buy (first-party product page URL), but details could not be parsed due fetch failure\nVariant match: URL title indicates Yes (AirPods Pro 2nd gen USB-C)\nASIN/SKU: 6447382\nApple - https://www.apple.com/shop/buy-airpods/airpods-pro-2\n\nPrice (USD): $249.00 (visible in page source)\nAvailability: Not explicitly confirmed in fetched readable extract\nSeller: Apple\nVariant match: No (URL redirects/content is for AirPods Pro 3)\nASIN/SKU: N/A (Apple retail page)\nChosen retailer + price + URL\nNo valid choice under your rules right now (hard cap $200 + required verifiable listing constraints).\nWithin budget?\nNo (only confirmed price is Apple at $249; others not verifiable from this run).\nTimestamp\n2026-02-22 10:35 UTC\n",
+    "captured_at": "2026-02-22T11:42:00+01:00",
+    "source": "openclaw",
+    "status": "provided"
+  },
+  "evidence": [
+    {
+      "retailer": "Amazon",
+      "url": "https://www.amazon.com/dp/B0CHWRXH8B",
+      "price_usd": 248.33,
+      "availability": "In Stock",
+      "seller": "6ave",
+      "timestamp": "2026-02-22T11:42:00+01:00",
+      "variant_match": true,
+      "listing_id": "B0CHWRXH8B",
+      "listing_id_type": "ASIN",
+      "notes": "Third-party seller; violates first-party-only rule."
+    },
+    {
+      "retailer": "Best Buy",
+      "url": "https://www.bestbuy.com/product/apple-airpods-pro-2-wireless-active-noise-cancelling-earbuds-with-hearing-aid-feature-white/JJGCQ88C8X",
+      "price_usd": 229.0,
+      "availability": "Shipping available; pickup unavailable",
+      "seller": "StarShop",
+      "timestamp": "2026-02-22T11:42:00+01:00",
+      "variant_match": true,
+      "listing_id": "10413470",
+      "listing_id_type": "SKU",
+      "notes": "Third-party seller; violates first-party-only rule."
+    },
+    {
+      "retailer": "Apple",
+      "url": "https://www.apple.com/shop/buy-airpods/airpods-pro-2",
+      "price_usd": null,
+      "availability": "Not available (page redirects to AirPods Pro 3)",
+      "seller": "Apple",
+      "timestamp": "2026-02-22T11:42:00+01:00",
+      "variant_match": false,
+      "listing_id": "airpods-pro-2",
+      "listing_id_type": "slug",
+      "notes": "AirPods Pro 2 no longer sold directly; page points to Pro 3."
+    }
+  ],
+  "notes": null
+}

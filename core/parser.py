@@ -39,8 +39,9 @@ class ParsedAgentOutput:
     within_budget: Optional[bool]
 
 
-def parse_agent_output(raw_text: str) -> ParsedAgentOutput:
-    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+def parse_agent_output(raw_text: Optional[str]) -> ParsedAgentOutput:
+    normalized_text = raw_text or ""
+    lines = [line.strip() for line in normalized_text.splitlines() if line.strip()]
 
     offers_by_retailer: dict[str, dict[str, Optional[str]]] = {}
     current_retailer: Optional[str] = None
@@ -62,11 +63,11 @@ def parse_agent_output(raw_text: str) -> ParsedAgentOutput:
     for retailer, fields in offers_by_retailer.items():
         offers.append(_build_offer(retailer, fields))
 
-    chosen = _parse_chosen_offer(raw_text)
-    within_budget = _parse_within_budget(raw_text)
+    chosen = _parse_chosen_offer(normalized_text, lines)
+    within_budget = _parse_within_budget(normalized_text, lines)
 
     return ParsedAgentOutput(
-        raw_text=raw_text,
+        raw_text=normalized_text,
         offers=offers,
         chosen=chosen,
         within_budget=within_budget,
@@ -122,10 +123,10 @@ def _build_offer(retailer: str, fields: dict[str, Optional[str]]) -> ParsedOffer
     )
 
 
-def _parse_chosen_offer(raw_text: str) -> Optional[ParsedOffer]:
+def _parse_chosen_offer(raw_text: str, lines: list[str]) -> Optional[ParsedOffer]:
     match = _RE_CHOSEN.search(raw_text)
     if not match:
-        return None
+        return _parse_chosen_offer_by_lines(lines)
 
     text = match.group(1)
     url_match = _RE_URL.search(text)
@@ -147,10 +148,10 @@ def _parse_chosen_offer(raw_text: str) -> Optional[ParsedOffer]:
     )
 
 
-def _parse_within_budget(raw_text: str) -> Optional[bool]:
+def _parse_within_budget(raw_text: str, lines: list[str]) -> Optional[bool]:
     match = _RE_WITHIN_BUDGET.search(raw_text)
     if not match:
-        return None
+        return _parse_within_budget_by_lines(lines)
     return match.group(1).lower() == "yes"
 
 
@@ -169,3 +170,44 @@ def _after_colon(line: str) -> str:
     if ":" in line:
         return line.split(":", 1)[1].strip()
     return line.strip()
+
+
+def _parse_chosen_offer_by_lines(lines: list[str]) -> Optional[ParsedOffer]:
+    for idx, line in enumerate(lines):
+        normalized = line.strip().lower().rstrip(":")
+        if normalized in {"chosen retailer + price + url", "chosen retailer + price + url"}:
+            # Look ahead for retailer/price line and URL line
+            next_line = lines[idx + 1] if idx + 1 < len(lines) else ""
+            next_next_line = lines[idx + 2] if idx + 2 < len(lines) else ""
+            if "no valid choice" in next_line.lower():
+                return None
+            url_match = _RE_URL.search(next_line) or _RE_URL.search(next_next_line)
+            price_match = _RE_PRICE.search(next_line) or _RE_PRICE.search(next_next_line)
+
+            retailer = _infer_retailer(next_line)
+            price_value = float(price_match.group(1)) if price_match else None
+            url = url_match.group(0) if url_match else None
+
+            return ParsedOffer(
+                retailer=retailer or "Unknown",
+                price_usd=price_value,
+                url=url,
+                availability=None,
+                seller=None,
+                variant_match=None,
+                listing_id=None,
+                listing_id_type=None,
+            )
+    return None
+
+
+def _parse_within_budget_by_lines(lines: list[str]) -> Optional[bool]:
+    for idx, line in enumerate(lines):
+        normalized = line.strip().lower()
+        if normalized.startswith("within budget"):
+            next_line = lines[idx + 1] if idx + 1 < len(lines) else ""
+            if next_line.lower().startswith("yes"):
+                return True
+            if next_line.lower().startswith("no"):
+                return False
+    return None

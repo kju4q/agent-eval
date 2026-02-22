@@ -1,0 +1,92 @@
+{
+  "version": "case-study-v0",
+  "id": "apple-20w-usb-c-adapter-2026-02-22",
+  "title": "Apple 20W USB-C Power Adapter — budget $25, first-party only",
+  "created_at": "2026-02-22T12:00:00+01:00",
+  "agent": {
+    "name": "OpenClaw",
+    "version": "2026.2.6-3",
+    "run_mode": "web_fetch"
+  },
+  "task": {
+    "product_name": "Apple 20W USB-C Power Adapter",
+    "product_variant": "Power Adapter Only",
+    "budget_usd": 25,
+    "currency": "USD",
+    "allowed_retailers": [
+      "Amazon",
+      "Best Buy",
+      "Apple"
+    ],
+    "rules": {
+      "allow_third_party": false,
+      "allow_refurbished": false,
+      "require_full_set": true
+    },
+    "canonical_listings": [
+      {
+        "retailer": "Amazon",
+        "url": "https://www.amazon.com/Apple-20W-USB-C-Power-Adapter/dp/B0DJFW7PNM",
+        "listing_id": "B0DJFW7PNM",
+        "listing_id_type": "ASIN"
+      },
+      {
+        "retailer": "Best Buy",
+        "url": "https://www.bestbuy.com/site/apple-20w-usb-c-power-adapter-white/6437121.p?skuId=6437121",
+        "listing_id": "6437121",
+        "listing_id_type": "SKU"
+      },
+      {
+        "retailer": "Apple",
+        "url": "https://www.apple.com/shop/product/mwvv3am/a/20w-usb-c-power-adapter",
+        "listing_id": "MWVV3AM/A",
+        "listing_id_type": "AppleSKU"
+      }
+    ]
+  },
+  "agent_output": {
+    "raw_text": "[Sun 2026-02-22 11:00 UTC] Find the lowest listed price (USD) for \"Apple 20W USB-C Power Adapter\". Constraints: - Allowed retailers ONLY: Amazon, Best Buy, Apple - Budget: $25 hard cap - New only, first-party only (Amazon must be \"Sold by Amazon.com\"; Best Buy must be sold & shipped by Best Buy; Apple direct) - Do NOT purchase Return: 1) For each retailer: price, URL, availability, seller, variant match (yes/no) 2) Chosen retailer + price + URL 3) Within budget? (yes/no) 4) Timestamp\n\nYou\n12:00 PM\nA\nweb_fetch\nhttps://www.apple.com/shop/product/MU7T2AM/A/20w-usb-c-power-adapter\nCompleted\nweb_fetch\nhttps://www.amazon.com/dp/B08L5TNJHG\nCompleted\nweb_search\nBest Buy Apple 20W USB-C Power Adapter sku\nCompleted\nsession_status\nCompleted\nAssistant\n12:00 PM\n⚠️\n{\"status\":\"error\",\"tool\":\"web_fetch\",\"error\":\"Web fetch failed (404): ... Page Not Found - Apple\"}\n\nweb_search\nResults included: https://www.bestbuy.com/site/apple-20w-usb-c-power-adapter-white/6437121.p?skuId=6437121\n\nweb_search\nsite:amazon.com Apple 20W USB-C Power Adapter\nCompleted\n\nweb_fetch\nhttps://www.apple.com/shop/product/MWVV3AM/A/20w-usb-c-compact-power-adapter\nCompleted\n\nweb_fetch\nhttps://www.amazon.com/Apple-20W-USB-C-Power-Adapter/dp/B0DJFW7PNM\nCompleted\n\nAssistant\n12:02 PM\nQuick check complete (USD, new, first-party only, no purchase made).\n\nPer retailer\nApple\n\nPrice: $19.00\nURL: https://www.apple.com/shop/product/MWVV3AM/A/20w-usb-c-power-adapter\nAvailability: Available signals present (pickup/delivery options shown)\nSeller: Apple (direct)\nVariant match: Yes (\"20W USB-C Power Adapter\")\nAmazon\n\nPrice: Not reliably retrievable from this environment (Amazon page blocks/omits price in fetched output)\nURL: https://www.amazon.com/Apple-20W-USB-C-Power-Adapter/dp/B0DJFW7PNM\nAvailability: Not reliably retrievable\nSeller: Could not confirm exact \"Sold by Amazon.com\" string from retrievable output\nVariant match: Yes (title/ASIN match for Apple 20W USB-C Power Adapter)\nBest Buy\n\nPrice: Not retrievable (Best Buy requests timed out from this environment)\nURL: https://www.bestbuy.com/site/apple-20w-usb-c-power-adapter-white/6437121.p?skuId=6437121\nAvailability: Not retrievable\nSeller: Could not confirm sold/shipped text due timeout\nVariant match: Yes (URL/title match)\nChosen retailer + price + URL\nApple — $19.00\nhttps://www.apple.com/shop/product/MWVV3AM/A/20w-usb-c-power-adapter\nWithin budget ($25 hard cap)?\nYes\nTimestamp\n2026-02-22 11:02 UTC",
+    "captured_at": "2026-02-22T12:00:00+01:00",
+    "source": "openclaw",
+    "status": "provided"
+  },
+  "evidence": [
+    {
+      "retailer": "Amazon",
+      "url": "https://www.amazon.com/Apple-20W-USB-C-Power-Adapter/dp/B0DJFW7PNM",
+      "price_usd": 13.3,
+      "availability": "In Stock",
+      "seller": "Amazon.com",
+      "timestamp": "2026-02-22T12:00:00+01:00",
+      "variant_match": true,
+      "listing_id": "B0DJFW7PNM",
+      "listing_id_type": "ASIN",
+      "notes": "30% savings off $19.00 list price; Prime delivery available."
+    },
+    {
+      "retailer": "Best Buy",
+      "url": "https://www.bestbuy.com/site/apple-20w-usb-c-power-adapter-white/6437121.p?skuId=6437121",
+      "price_usd": 14.99,
+      "availability": "Pickup ready today; shipping available",
+      "seller": "Best Buy",
+      "timestamp": "2026-02-22T12:00:00+01:00",
+      "variant_match": true,
+      "listing_id": "6437121",
+      "listing_id_type": "SKU",
+      "notes": "Comp. value $19.00; sold by Best Buy."
+    },
+    {
+      "retailer": "Apple",
+      "url": "https://www.apple.com/shop/product/mwvv3am/a/20w-usb-c-power-adapter",
+      "price_usd": 19.0,
+      "availability": "Add to Bag available",
+      "seller": "Apple",
+      "timestamp": "2026-02-22T12:00:00+01:00",
+      "variant_match": true,
+      "listing_id": "MWVV3AM/A",
+      "listing_id_type": "AppleSKU",
+      "notes": "Apple direct listing."
+    }
+  ],
+  "notes": null
+}
