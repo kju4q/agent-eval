@@ -8,3 +8,5 @@ This folder holds real case-study inputs for the v0 demo.
   "Not Evaluated".
 
 See `data/fixtures/schema_v0.json` for the canonical structure.
+
+core openclaw adapter - live api endpoint for both deployed and live AI agents

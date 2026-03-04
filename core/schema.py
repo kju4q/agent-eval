@@ -123,6 +123,8 @@ class EvidenceItem:
     listing_id: Optional[str]
     listing_id_type: Optional[str]
     notes: Optional[str]
+    source_type: Optional[str]
+    confidence: Optional[float]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EvidenceItem":
@@ -139,6 +141,8 @@ class EvidenceItem:
             listing_id=_opt_str(data, "listing_id"),
             listing_id_type=_opt_str(data, "listing_id_type"),
             notes=_opt_str(data, "notes"),
+            source_type=_opt_str(data, "source_type"),
+            confidence=_opt_float(data, "confidence"),
         )
 
 

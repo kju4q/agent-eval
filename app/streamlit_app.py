@@ -7,6 +7,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+import httpx
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -574,10 +575,11 @@ Network: Base Mainnet"""
 def build_scores_from_eval(eval_result):
     if eval_result is None:
         return {}
+    found_best = _get_eval_field(eval_result, "found_best_first_party_price")
     # Price accuracy score: 100 if best price found, 0 if found but wrong, None if insufficient data
-    if eval_result.found_best_first_party_price is True:
+    if found_best is True:
         price_score = 100
-    elif eval_result.found_best_first_party_price is False:
+    elif found_best is False:
         price_score = 0
     else:
         price_score = None
@@ -596,7 +598,49 @@ def format_currency(value: Optional[float]) -> str:
     return f"${value:,.2f}"
 
 
-def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None):
+def _get_eval_field(eval_result, field: str):
+    if eval_result is None:
+        return None
+    if isinstance(eval_result, dict):
+        return eval_result.get(field)
+    return getattr(eval_result, field, None)
+
+
+def _create_live_job(api_url: str, api_token: str, payload: dict) -> Optional[str]:
+    headers = {"Authorization": f"Bearer {api_token}"}
+    try:
+        with httpx.Client(timeout=12.0) as client:
+            resp = client.post(f"{api_url.rstrip('/')}/v1/jobs", json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("id")
+    except httpx.HTTPError:
+        return None
+
+
+def _poll_live_result(api_url: str, job_id: str, timeout_s: float = 600.0) -> tuple[Optional[dict], Optional[str], Optional[str], Optional[str]]:
+    start = time.time()
+    while time.time() - start < timeout_s:
+        try:
+            with httpx.Client(timeout=8.0) as client:
+                resp = client.get(f"{api_url.rstrip('/')}/v1/runs/{job_id}")
+                if resp.status_code == 404:
+                    time.sleep(1.0)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.HTTPError:
+            time.sleep(1.0)
+            continue
+
+        status = data.get("status")
+        if status in {"completed", "failed"}:
+            return data.get("eval_result"), data.get("raw_output"), data.get("error"), status
+        time.sleep(1.0)
+    return None, None, None, None
+
+
+def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_payload=None, api_url=None, api_token=None):
     """Run evaluation tests with detailed progress."""
 
     progress_bar = st.progress(0)
@@ -616,8 +660,28 @@ def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None):
         progress_bar.progress(1.0)
         time.sleep(0.6)
         return scores, None, {}, eval_result
-    status_container.markdown("Live agent evaluation is not available in v0.")
-    detail_container.markdown("Demo mode uses case studies only.")
+    if live_payload and api_url and api_token:
+        status_container.markdown("**Creating live job...**")
+        progress_bar.progress(0.1)
+        job_id = _create_live_job(api_url, api_token, live_payload)
+        if not job_id:
+            status_container.markdown("**Failed to create job.**")
+            progress_bar.progress(1.0)
+            return build_scores_from_eval(None), None, {}, None
+
+        status_container.markdown("**Running live evaluation...**")
+        progress_bar.progress(0.4)
+        eval_result, raw_output, error, status = _poll_live_result(api_url, job_id)
+        progress_bar.progress(1.0)
+        scores = build_scores_from_eval(eval_result)
+        if raw_output:
+            st.session_state["case_raw_text"] = raw_output
+        elif error:
+            st.session_state["case_raw_text"] = f"[error] {error}"
+        return scores, None, {}, eval_result
+
+    status_container.markdown("Live agent evaluation is not configured.")
+    detail_container.markdown("Set an AgentEval API URL to run live jobs.")
     progress_bar.progress(1.0)
     return build_scores_from_eval(None), None, {}, None
 
@@ -905,25 +969,78 @@ def main():
 
     with col1:
         st.markdown('<div class="card-title">Agent Configuration</div>', unsafe_allow_html=True)
-
-        agent_input = st.text_input(
-            "Agent Endpoint or Name",
-            placeholder="https://api.example.com/agent",
-            help="Endpoint input is shown for future use. Demo mode uses case studies only."
+        mode = st.radio(
+            "Mode",
+            ["Demo (Case Studies)", "Live OpenClaw"],
+            horizontal=True,
         )
-        demo_mode = True
+        demo_mode = mode.startswith("Demo")
         demo_case = None
-        case_studies = load_case_studies()
-        case_labels = {f"{case.title} ({case.id})": case for case in case_studies}
-        if case_labels:
-            selected_label = st.selectbox(
-                "Demo Case Study",
-                options=list(case_labels.keys()),
-                help="Uses ground-truth case studies (no live browsing)."
-            )
-            demo_case = case_labels[selected_label]
+        live_payload = None
+        api_url = None
+        api_token = None
+
+        if demo_mode:
+            case_studies = load_case_studies()
+            case_labels = {f"{case.title} ({case.id})": case for case in case_studies}
+            if case_labels:
+                selected_label = st.selectbox(
+                    "Demo Case Study",
+                    options=list(case_labels.keys()),
+                    help="Uses ground-truth case studies (no live browsing)."
+                )
+                demo_case = case_labels[selected_label]
+            else:
+                st.warning("No case studies found.")
         else:
-            st.warning("No case studies found.")
+            api_url = st.text_input(
+                "AgentEval API URL",
+                placeholder="http://localhost:8000",
+                help="Hosted API that the connector polls for jobs.",
+            )
+            api_token = st.text_input(
+                "Connector Token",
+                type="password",
+                help="Matches AGENTEVAL_CONNECTOR_TOKEN on the API server.",
+            )
+            agent_id = st.text_input(
+                "OpenClaw Agent Id",
+                value="main",
+                help="Agent id passed to OpenClaw (openclaw:<agent_id>).",
+            )
+            product_name = st.text_input("Product name")
+            product_variant = st.text_input("Product variant (optional)")
+            budget_usd = st.number_input("Budget (USD)", min_value=0.0, value=200.0, step=1.0)
+            allowed_retailers = st.multiselect(
+                "Allowed retailers",
+                ["Amazon", "Best Buy", "Apple"],
+                default=["Amazon", "Best Buy", "Apple"],
+            )
+            prompt = st.text_area(
+                "Prompt",
+                placeholder="Find the lowest listed price for ...",
+            )
+            st.markdown("**Rules**")
+            allow_third_party = st.checkbox("Allow third-party sellers", value=False)
+            allow_refurbished = st.checkbox("Allow refurbished/used", value=False)
+            require_full_set = st.checkbox("Require full set", value=True)
+
+            live_payload = {
+                "product_name": product_name.strip() if product_name else "",
+                "product_variant": product_variant.strip() or None,
+                "prompt": prompt.strip(),
+                "budget_usd": budget_usd,
+                "currency": "USD",
+                "allowed_retailers": allowed_retailers,
+                "rules": {
+                    "allow_third_party": allow_third_party,
+                    "allow_refurbished": allow_refurbished,
+                    "require_full_set": require_full_set,
+                },
+                "agent_id": agent_id.strip() or "main",
+                "source": "openclaw",
+            }
+            st.caption("Connector must be running and polling this AgentEval API.")
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown("**Select Evaluation Tests**")
@@ -937,7 +1054,7 @@ def main():
             with col_check:
                 default_checked = test_name in supported_tests
                 if st.checkbox(
-                    "",
+                    f"{test_name} checkbox",
                     value=default_checked,
                     key=f"check_{test_name}",
                     label_visibility="collapsed",
@@ -955,7 +1072,10 @@ def main():
                 """, unsafe_allow_html=True)
 
         acp_mode = False
-        st.caption("Demo mode evaluates only price accuracy from case studies.")
+        if demo_mode:
+            st.caption("Demo mode evaluates only price accuracy from case studies.")
+        else:
+            st.caption("Live mode currently evaluates price accuracy only.")
 
         if acp_mode:
             st.markdown("""
@@ -996,9 +1116,14 @@ def main():
 
     # Run button
     run_disabled = len(selected_tests) == 0
+    if not demo_mode:
+        if not api_url or not api_token:
+            run_disabled = True
+        if not live_payload or not live_payload.get("product_name") or not live_payload.get("prompt"):
+            run_disabled = True
 
     if st.button("Run Evaluation", use_container_width=True, disabled=run_disabled):
-        agent_input = "demo-agent (case study)"
+        agent_input = "demo-agent (case study)" if demo_mode else "openclaw (live)"
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -1026,6 +1151,9 @@ def main():
                 selected_tests,
                 acp_mode,
                 case_study=demo_case if demo_mode else None,
+                live_payload=live_payload if not demo_mode else None,
+                api_url=api_url,
+                api_token=api_token,
             )
         overlay.empty()
 
@@ -1039,7 +1167,8 @@ def main():
         st.session_state["x402_response"] = x402_response
         st.session_state["eval_result"] = eval_result
         st.session_state["demo_mode"] = demo_mode
-        st.session_state["case_raw_text"] = demo_case.agent_output.raw_text if demo_case else None
+        if demo_mode:
+            st.session_state["case_raw_text"] = demo_case.agent_output.raw_text if demo_case else None
         st.session_state["show_results"] = True
         time.sleep(0.5)
         st.rerun()
@@ -1160,17 +1289,19 @@ def show_results():
 
     with row2_left:
         if eval_result is not None:
-            if eval_result.agent_chosen_retailer or eval_result.agent_chosen_price_usd is not None:
-                chosen_label = f"{eval_result.agent_chosen_retailer or 'Unknown'}"
-                chosen_value = format_currency(eval_result.agent_chosen_price_usd)
+            chosen_retailer = _get_eval_field(eval_result, "agent_chosen_retailer")
+            chosen_price = _get_eval_field(eval_result, "agent_chosen_price_usd")
+            if chosen_retailer or chosen_price is not None:
+                chosen_label = f"{chosen_retailer or 'Unknown'}"
+                chosen_value = format_currency(chosen_price)
             else:
                 chosen_label = "Agent choice"
                 chosen_value = "N/A"
 
             within_budget = "N/A"
-            if eval_result.within_budget is True:
+            if _get_eval_field(eval_result, "within_budget") is True:
                 within_budget = "Yes"
-            elif eval_result.within_budget is False:
+            elif _get_eval_field(eval_result, "within_budget") is False:
                 within_budget = "No"
 
             price_score = scores.get("Price Comparison Accuracy")
@@ -1184,10 +1315,10 @@ def show_results():
                 <div class="card">
                     <div class="card-title">Price Evaluation</div>
                     <div class="metric-grid">
-                        <div class="metric-item">
-                            <div class="metric-label">Best first-party price</div>
-                            <div class="metric-value">{format_currency(eval_result.best_first_party_price_usd)}</div>
-                        </div>
+                            <div class="metric-item">
+                                <div class="metric-label">Best first-party price</div>
+                                <div class="metric-value">{format_currency(_get_eval_field(eval_result, "best_first_party_price_usd"))}</div>
+                            </div>
                         <div class="metric-item">
                             <div class="metric-label">Agent choice</div>
                             <div class="metric-value">{chosen_label} · {chosen_value}</div>
@@ -1196,10 +1327,10 @@ def show_results():
                             <div class="metric-label">Within budget</div>
                             <div class="metric-value">{within_budget}</div>
                         </div>
-                        <div class="metric-item">
-                            <div class="metric-label">Money left on table</div>
-                            <div class="metric-value">{format_currency(eval_result.money_left_on_table_usd)}</div>
-                        </div>
+                            <div class="metric-item">
+                                <div class="metric-label">Money left on table</div>
+                                <div class="metric-value">{format_currency(_get_eval_field(eval_result, "money_left_on_table_usd"))}</div>
+                            </div>
                         <div class="metric-item">
                             <div class="metric-label">Price accuracy</div>
                             <div class="metric-value">{price_score_value}</div>
@@ -1211,39 +1342,15 @@ def show_results():
             )
 
     with row2_right:
-        if demo_mode:
-            st.markdown('<div class="card"><div class="card-title">Raw Agent Output</div>', unsafe_allow_html=True)
-            with st.expander("Show raw output", expanded=False):
-                case_raw = st.session_state.get("case_raw_text")
-                display_text = case_raw or ""
-                if not display_text:
-                    st.info("No raw agent output available.")
-                else:
-                    st.code(display_text, language="text")
-            st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.markdown(
-                """
-                <div class="card">
-                    <div class="card-title">Other Tests</div>
-                    <div class="metric-grid">
-                        <div class="metric-item metric-muted">
-                            <div class="metric-label">Negotiation Quality</div>
-                            <div class="metric-value">Not evaluated</div>
-                        </div>
-                        <div class="metric-item metric-muted">
-                            <div class="metric-label">x402 Payment Correctness</div>
-                            <div class="metric-value">Not evaluated</div>
-                        </div>
-                        <div class="metric-item metric-muted">
-                            <div class="metric-label">Safety</div>
-                            <div class="metric-value">Not evaluated</div>
-                        </div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        st.markdown('<div class="card"><div class="card-title">Raw Agent Output</div>', unsafe_allow_html=True)
+        with st.expander("Show raw output", expanded=False):
+            case_raw = st.session_state.get("case_raw_text")
+            display_text = case_raw or ""
+            if not display_text:
+                st.info("No raw agent output available.")
+            else:
+                st.code(display_text, language="text")
+        st.markdown('</div>', unsafe_allow_html=True)
 
     # Row 3: Radar
     st.markdown("**Agent Performance Radar**")

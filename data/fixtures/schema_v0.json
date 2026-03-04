@@ -45,7 +45,9 @@
       "variant_match": true,
       "listing_id": "B0CHWRXH8B",
       "listing_id_type": "ASIN",
-      "notes": "string or null"
+      "notes": "string or null",
+      "source_type": "string or null",
+      "confidence": 0.0
     }
   ],
   "notes": "string or null"

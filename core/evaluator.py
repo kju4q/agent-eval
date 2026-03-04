@@ -27,6 +27,7 @@ def evaluate_case_study(case_study: CaseStudy) -> EvaluationResult:
         for item in case_study.evidence
         if _qualifies(item, case_study.task.rules)
     ]
+    qualifying = _filter_by_confidence(qualifying)
     qualifying_with_price = [item for item in qualifying if item.price_usd is not None]
     best_item = None
     if qualifying_with_price:
@@ -141,3 +142,13 @@ def _match_offer_to_evidence(
         if len(matches) == 1:
             return matches[0]
     return None
+
+
+def _filter_by_confidence(evidence: list[EvidenceItem]) -> list[EvidenceItem]:
+    if not evidence:
+        return evidence
+    if any(item.confidence is not None for item in evidence):
+        high_conf = [item for item in evidence if (item.confidence or 0.0) >= 0.8]
+        if high_conf:
+            return high_conf
+    return evidence
