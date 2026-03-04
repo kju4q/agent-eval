@@ -17,7 +17,8 @@ Status: Work in progress (early demo).
    - Set `AGENTEVAL_CONNECTOR_TOKEN` in your environment.
    - (Optional) Set `BESTBUY_API_KEY` for live price evidence.
 4. Start the connector:
-   - `agenteval connect --api-url http://localhost:8000 --api-token <token> --gateway-url http://127.0.0.1:18789 --gateway-token <gateway_token> --agent-id main`
+   - `agenteval connect --api-url http://localhost:8000 --api-token <token> --gateway-url http://127.0.0.1:18789 --gateway-token <gateway_token> --agent-id main --timeout 600`
+   - Increase `--timeout` for large prompts or slow browsing tasks.
 
 ## Environment Variables
 - `AGENTEVAL_CONNECTOR_TOKEN` (required) — token shared between API and connector.

@@ -32,7 +32,7 @@ def main() -> None:
     connect.add_argument("--gateway-token", required=True, help="OpenClaw Gateway token")
     connect.add_argument("--agent-id", default="main", help="OpenClaw agent id")
     connect.add_argument("--poll-interval", type=float, default=2.0, help="Seconds between polls")
-    connect.add_argument("--timeout", type=float, default=180.0, help="OpenClaw request timeout (seconds)")
+    connect.add_argument("--timeout", type=float, default=600.0, help="OpenClaw request timeout (seconds)")
 
     args = parser.parse_args()
     if args.command == "connect":
@@ -76,6 +76,15 @@ def _execute_job(config: ConnectorConfig, job: dict) -> tuple[str, str | None]:
     payload = job.get("payload", {})
     prompt = payload.get("prompt") or ""
     messages = [OpenClawMessage(role="user", content=prompt)]
+    timeout_s = config.request_timeout
+    payload_timeout = payload.get("timeout_s")
+    if payload_timeout is not None:
+        try:
+            parsed_timeout = float(payload_timeout)
+            if parsed_timeout > 0:
+                timeout_s = parsed_timeout
+        except (TypeError, ValueError):
+            pass
 
     try:
         response = chat_completions(
@@ -84,7 +93,7 @@ def _execute_job(config: ConnectorConfig, job: dict) -> tuple[str, str | None]:
             agent_id=payload.get("agent_id") or config.agent_id,
             messages=messages,
             user=f"agenteval:{job['id']}",
-            timeout_s=config.request_timeout,
+            timeout_s=timeout_s,
         )
         return response.text or json.dumps(response.raw), None
     except Exception as exc:

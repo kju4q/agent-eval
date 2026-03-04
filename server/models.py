@@ -21,6 +21,7 @@ class CreateJobPayload(BaseModel):
     rules: TaskRulesPayload = Field(default_factory=TaskRulesPayload)
     agent_id: str = "main"
     source: str = "openclaw"
+    timeout_s: Optional[float] = None
 
 
 class JobResponse(BaseModel):

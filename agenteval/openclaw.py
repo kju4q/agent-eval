@@ -46,7 +46,8 @@ def chat_completions(
     }
 
     try:
-        with httpx.Client(timeout=timeout_s) as client:
+        timeout = httpx.Timeout(timeout_s, connect=10.0, read=timeout_s, write=timeout_s)
+        with httpx.Client(timeout=timeout) as client:
             resp = client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()

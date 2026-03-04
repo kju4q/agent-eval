@@ -671,7 +671,13 @@ def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_
 
         status_container.markdown("**Running live evaluation...**")
         progress_bar.progress(0.4)
-        eval_result, raw_output, error, status = _poll_live_result(api_url, job_id)
+        poll_timeout = 600.0
+        if live_payload:
+            try:
+                poll_timeout = max(120.0, float(live_payload.get("timeout_s") or poll_timeout) + 60.0)
+            except (TypeError, ValueError):
+                poll_timeout = 600.0
+        eval_result, raw_output, error, status = _poll_live_result(api_url, job_id, timeout_s=poll_timeout)
         progress_bar.progress(1.0)
         scores = build_scores_from_eval(eval_result)
         if raw_output:
@@ -1020,6 +1026,13 @@ def main():
                 "Prompt",
                 placeholder="Find the lowest listed price for ...",
             )
+            timeout_s = st.number_input(
+                "OpenClaw timeout (seconds)",
+                min_value=30.0,
+                value=600.0,
+                step=30.0,
+                help="Increase this for large prompts or slow browsing tasks.",
+            )
             st.markdown("**Rules**")
             allow_third_party = st.checkbox("Allow third-party sellers", value=False)
             allow_refurbished = st.checkbox("Allow refurbished/used", value=False)
@@ -1039,6 +1052,7 @@ def main():
                 },
                 "agent_id": agent_id.strip() or "main",
                 "source": "openclaw",
+                "timeout_s": timeout_s,
             }
             st.caption("Connector must be running and polling this AgentEval API.")
 
