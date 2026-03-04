@@ -1,1 +1,0 @@
-"""Adapter helpers for AgentEval."""

@@ -16,4 +16,4 @@ dependencies = [
 agenteval = "agenteval.cli:main"
 
 [tool.setuptools]
-packages = ["agenteval", "adapters", "core", "server"]
+packages = ["agenteval", "core", "server"]
