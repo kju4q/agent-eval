@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import time
 from dataclasses import dataclass
 
@@ -22,6 +23,10 @@ class ConnectorConfig:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s agenteval.connector: %(message)s",
+    )
     parser = argparse.ArgumentParser(prog="agenteval", description="AgentEval connector CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -49,14 +54,22 @@ def main() -> None:
 
 
 def run_connector(config: ConnectorConfig) -> None:
+    logger = logging.getLogger("agenteval.connector")
     headers = {"Authorization": f"Bearer {config.api_token}"}
+    logger.info("Connector started. Polling %s every %.1fs", config.api_url, config.poll_interval)
     while True:
         job = _fetch_next_job(config.api_url, headers)
         if not job:
             time.sleep(config.poll_interval)
             continue
 
+        job_id = job.get("id")
+        logger.info("Picked up job %s", job_id)
         raw_output, error = _execute_job(config, job)
+        if error:
+            logger.error("Job %s failed: %s", job_id, error)
+        else:
+            logger.info("Job %s completed", job_id)
         _complete_job(config.api_url, headers, job["id"], raw_output, error)
 
 
@@ -73,6 +86,7 @@ def _fetch_next_job(api_url: str, headers: dict[str, str]) -> dict | None:
 
 
 def _execute_job(config: ConnectorConfig, job: dict) -> tuple[str, str | None]:
+    logger = logging.getLogger("agenteval.connector")
     payload = job.get("payload", {})
     prompt = payload.get("prompt") or ""
     messages = [OpenClawMessage(role="user", content=prompt)]
@@ -87,6 +101,7 @@ def _execute_job(config: ConnectorConfig, job: dict) -> tuple[str, str | None]:
             pass
 
     try:
+        logger.info("Sending job %s to OpenClaw (%s)", job.get("id"), payload.get("agent_id") or config.agent_id)
         response = chat_completions(
             base_url=config.gateway_url,
             token=config.gateway_token,

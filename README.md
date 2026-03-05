@@ -23,3 +23,4 @@ Status: Work in progress (early demo).
 ## Environment Variables
 - `AGENTEVAL_CONNECTOR_TOKEN` (required) — token shared between API and connector.
 - `BESTBUY_API_KEY` (optional) — enables Best Buy price evidence.
+- `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` (optional) — enables Amazon price evidence via DataForSEO.

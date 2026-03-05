@@ -78,6 +78,7 @@ class JobStore:
         return _row_to_job(row)
 
     def fetch_next_job(self) -> Optional[JobRecord]:
+        self.mark_stale_running()
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -94,6 +95,30 @@ class JobStore:
                 ("running", _utc_now(), row["id"]),
             )
         return _row_to_job(row)
+
+    def mark_stale_running(self) -> int:
+        now = datetime.now(timezone.utc)
+        updated_rows = 0
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, payload, updated_at FROM jobs WHERE status = 'running'"
+            ).fetchall()
+            for row in rows:
+                payload = json.loads(row["payload"])
+                timeout_s = _parse_timeout(payload.get("timeout_s"))
+                max_age_s = max(900.0, timeout_s + 120.0)
+                updated_at = _parse_iso(row["updated_at"])
+                if (now - updated_at).total_seconds() > max_age_s:
+                    conn.execute(
+                        """
+                        UPDATE jobs
+                        SET status = ?, updated_at = ?, error = ?
+                        WHERE id = ?
+                        """,
+                        ("failed", _utc_now(), "stale-running-timeout", row["id"]),
+                    )
+                    updated_rows += 1
+        return updated_rows
 
     def complete_job(
         self,
@@ -133,3 +158,19 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
         updated_at=row["updated_at"],
         error=row["error"],
     )
+
+
+def _parse_iso(value: str) -> datetime:
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    return datetime.fromisoformat(value)
+
+
+def _parse_timeout(value: Any) -> float:
+    try:
+        parsed = float(value)
+        if parsed > 0:
+            return parsed
+    except (TypeError, ValueError):
+        pass
+    return 600.0
