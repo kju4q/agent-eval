@@ -12,9 +12,21 @@ _RE_CHOSEN = re.compile(
     r"chosen retailer\s*\+\s*price\s*\+\s*url\s*:\s*(.+)",
     re.IGNORECASE,
 )
+_RE_CHOSEN_SECTION = re.compile(
+    r"chosen retailer",
+    re.IGNORECASE,
+)
 
 _RE_WITHIN_BUDGET = re.compile(
     r"within budget\s*\(?\$?[0-9.]+\s*hard cap\)?\?\s*(yes|no)",
+    re.IGNORECASE,
+)
+_RE_WITHIN_BUDGET_INLINE = re.compile(
+    r"within budget[^\\n]*(yes|no)",
+    re.IGNORECASE,
+)
+_RE_RETAILER_PRICE = re.compile(
+    r"(amazon|best buy|bestbuy|apple)[^\\n$]*\\$\\s*([0-9]+(?:\\.[0-9]{2})?)",
     re.IGNORECASE,
 )
 
@@ -151,6 +163,9 @@ def _parse_chosen_offer(raw_text: str, lines: list[str]) -> Optional[ParsedOffer
 def _parse_within_budget(raw_text: str, lines: list[str]) -> Optional[bool]:
     match = _RE_WITHIN_BUDGET.search(raw_text)
     if not match:
+        match_inline = _RE_WITHIN_BUDGET_INLINE.search(raw_text)
+        if match_inline:
+            return match_inline.group(1).lower() == "yes"
         return _parse_within_budget_by_lines(lines)
     return match.group(1).lower() == "yes"
 
@@ -174,20 +189,22 @@ def _after_colon(line: str) -> str:
 
 def _parse_chosen_offer_by_lines(lines: list[str]) -> Optional[ParsedOffer]:
     for idx, line in enumerate(lines):
-        normalized = line.strip().lower().rstrip(":")
-        if normalized in {"chosen retailer + price + url", "chosen retailer + price + url"}:
-            # Look ahead for retailer/price line and URL line
-            next_line = lines[idx + 1] if idx + 1 < len(lines) else ""
-            next_next_line = lines[idx + 2] if idx + 2 < len(lines) else ""
-            if "no valid choice" in next_line.lower():
-                return None
-            url_match = _RE_URL.search(next_line) or _RE_URL.search(next_next_line)
-            price_match = _RE_PRICE.search(next_line) or _RE_PRICE.search(next_next_line)
+        normalized = _strip_leading_index(_strip_markdown(line)).lower().rstrip(":")
+        if _RE_CHOSEN_SECTION.search(normalized):
+            return _parse_chosen_block(lines, idx)
+    return None
 
-            retailer = _infer_retailer(next_line)
-            price_value = float(price_match.group(1)) if price_match else None
-            url = url_match.group(0) if url_match else None
 
+def _parse_chosen_block(lines: list[str], idx: int) -> Optional[ParsedOffer]:
+    window = lines[idx: idx + 6]
+    # Drop the header line
+    candidates = [_strip_markdown(line) for line in window[1:]]
+    for line in candidates:
+        if "no valid choice" in line.lower():
+            return None
+        retailer, price_value = _extract_retailer_price(line)
+        url = _extract_url(line, candidates)
+        if retailer or price_value or url:
             return ParsedOffer(
                 retailer=retailer or "Unknown",
                 price_usd=price_value,
@@ -199,15 +216,62 @@ def _parse_chosen_offer_by_lines(lines: list[str]) -> Optional[ParsedOffer]:
                 listing_id_type=None,
             )
     return None
+    return None
 
 
 def _parse_within_budget_by_lines(lines: list[str]) -> Optional[bool]:
     for idx, line in enumerate(lines):
-        normalized = line.strip().lower()
+        normalized = _strip_leading_index(_strip_markdown(line)).lower()
         if normalized.startswith("within budget"):
-            next_line = lines[idx + 1] if idx + 1 < len(lines) else ""
+            if "yes" in normalized:
+                return True
+            if "no" in normalized:
+                return False
+            next_line = _strip_markdown(lines[idx + 1]) if idx + 1 < len(lines) else ""
             if next_line.lower().startswith("yes"):
                 return True
             if next_line.lower().startswith("no"):
                 return False
     return None
+
+
+def _extract_retailer_price(line: str) -> tuple[Optional[str], Optional[float]]:
+    retailer = _infer_retailer(line)
+    price_match = _RE_PRICE.search(line)
+    if price_match:
+        try:
+            return retailer, float(price_match.group(1))
+        except ValueError:
+            return retailer, None
+    match = _RE_RETAILER_PRICE.search(line)
+    if match:
+        retailer = _infer_retailer(match.group(1)) or retailer
+        try:
+            return retailer, float(match.group(2))
+        except ValueError:
+            return retailer, None
+    return retailer, None
+
+
+def _extract_url(line: str, candidates: list[str]) -> Optional[str]:
+    url_match = _RE_URL.search(line)
+    if url_match:
+        return url_match.group(0)
+    for other in candidates:
+        url_match = _RE_URL.search(other)
+        if url_match:
+            return url_match.group(0)
+    return None
+
+
+def _strip_markdown(line: str) -> str:
+    text = line.strip()
+    if text.startswith(("-", "*", "•")):
+        text = text[1:].strip()
+    text = text.replace("**", "")
+    text = text.replace("`", "")
+    return text
+
+
+def _strip_leading_index(line: str) -> str:
+    return re.sub(r"^[\\d]+[\\).\\s:-]*", "", line).strip()

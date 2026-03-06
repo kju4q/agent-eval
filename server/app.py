@@ -94,7 +94,10 @@ def complete_job(
 
 @app.get("/v1/runs/{job_id}", response_model=RunResultPayload)
 def get_run(job_id: str) -> RunResultPayload:
-    record = store.get_job(job_id)
+    try:
+        record = store.get_job(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Job not found.")
     return RunResultPayload(
         eval_result=record.eval_result,
         raw_output=record.raw_output,
