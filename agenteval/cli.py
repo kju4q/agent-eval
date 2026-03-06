@@ -3,12 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import httpx
 
 from agenteval.openclaw import OpenClawMessage, chat_completions
+
+CONFIG_PATH = Path.home() / ".agenteval" / "config.json"
 
 
 @dataclass
@@ -31,26 +36,33 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     connect = sub.add_parser("connect", help="Start the AgentEval connector")
-    connect.add_argument("--api-url", required=True, help="AgentEval API base URL")
-    connect.add_argument("--api-token", required=True, help="AgentEval connector token")
-    connect.add_argument("--gateway-url", default="http://127.0.0.1:18789", help="OpenClaw Gateway URL")
-    connect.add_argument("--gateway-token", required=True, help="OpenClaw Gateway token")
-    connect.add_argument("--agent-id", default="main", help="OpenClaw agent id")
-    connect.add_argument("--poll-interval", type=float, default=2.0, help="Seconds between polls")
-    connect.add_argument("--timeout", type=float, default=600.0, help="OpenClaw request timeout (seconds)")
+    connect.add_argument("--api-url", help="AgentEval API base URL")
+    connect.add_argument("--api-token", help="AgentEval connector token")
+    connect.add_argument("--gateway-url", help="OpenClaw Gateway URL")
+    connect.add_argument("--gateway-token", help="OpenClaw Gateway token")
+    connect.add_argument("--agent-id", help="OpenClaw agent id")
+    connect.add_argument("--poll-interval", type=float, help="Seconds between polls")
+    connect.add_argument("--timeout", type=float, help="OpenClaw request timeout (seconds)")
+
+    init = sub.add_parser("init", help="Create or update ~/.agenteval/config.json")
+    init.add_argument("--path", default=str(CONFIG_PATH), help="Config file path")
+
+    status = sub.add_parser("status", help="Check AgentEval and OpenClaw connectivity")
+    status.add_argument("--api-url", help="AgentEval API base URL")
+    status.add_argument("--gateway-url", help="OpenClaw Gateway URL")
+    status.add_argument("--gateway-token", help="OpenClaw Gateway token")
 
     args = parser.parse_args()
     if args.command == "connect":
-        config = ConnectorConfig(
-            api_url=args.api_url.rstrip("/"),
-            api_token=args.api_token,
-            gateway_url=args.gateway_url.rstrip("/"),
-            gateway_token=args.gateway_token,
-            agent_id=args.agent_id,
-            poll_interval=args.poll_interval,
-            request_timeout=args.timeout,
-        )
+        config = _resolve_connect_config(args)
         run_connector(config)
+        return
+    if args.command == "init":
+        _init_config(Path(args.path))
+        return
+    if args.command == "status":
+        _print_status(args)
+        return
 
 
 def run_connector(config: ConnectorConfig) -> None:
@@ -128,6 +140,161 @@ def _complete_job(
             client.post(f"{api_url}/v1/jobs/{job_id}/complete", json=payload, headers=headers)
     except httpx.HTTPError:
         return
+
+
+def _load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(data, dict):
+        return data
+    return {}
+
+
+def _resolve_connect_config(args: argparse.Namespace) -> ConnectorConfig:
+    cfg = _load_config()
+    api_url = _pick_value(args.api_url, os.getenv("AGENTEVAL_API_URL"), cfg.get("api_url"))
+    api_token = _pick_value(args.api_token, os.getenv("AGENTEVAL_CONNECTOR_TOKEN"), cfg.get("api_token"))
+    gateway_url = _pick_value(
+        args.gateway_url,
+        os.getenv("OPENCLAW_GATEWAY_URL"),
+        cfg.get("gateway_url"),
+        "http://127.0.0.1:18789",
+    )
+    gateway_token = _pick_value(
+        args.gateway_token,
+        os.getenv("OPENCLAW_GATEWAY_TOKEN"),
+        cfg.get("gateway_token"),
+    )
+    agent_id = _pick_value(args.agent_id, os.getenv("OPENCLAW_AGENT_ID"), cfg.get("agent_id"), "main")
+    poll_interval = _pick_float(args.poll_interval, os.getenv("AGENTEVAL_POLL_INTERVAL"), cfg.get("poll_interval"), 2.0)
+    request_timeout = _pick_float(args.timeout, os.getenv("AGENTEVAL_TIMEOUT"), cfg.get("timeout"), 600.0)
+
+    missing = []
+    if not api_url:
+        missing.append("api_url")
+    if not api_token:
+        missing.append("api_token (AGENTEVAL_CONNECTOR_TOKEN)")
+    if not gateway_token:
+        missing.append("gateway_token (OPENCLAW_GATEWAY_TOKEN)")
+    if missing:
+        raise SystemExit(f"Missing required configuration: {', '.join(missing)}")
+
+    return ConnectorConfig(
+        api_url=str(api_url).rstrip("/"),
+        api_token=str(api_token),
+        gateway_url=str(gateway_url).rstrip("/"),
+        gateway_token=str(gateway_token),
+        agent_id=str(agent_id),
+        poll_interval=float(poll_interval),
+        request_timeout=float(request_timeout),
+    )
+
+
+def _pick_value(*values: Any) -> Any:
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _pick_float(*values: Any) -> float:
+    for value in values:
+        if value is None or value == "":
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return float(values[-1])
+
+
+def _init_config(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = _load_config(path)
+    defaults = {
+        "api_url": existing.get("api_url", "http://localhost:8000"),
+        "gateway_url": existing.get("gateway_url", "http://127.0.0.1:18789"),
+        "agent_id": existing.get("agent_id", "main"),
+        "poll_interval": existing.get("poll_interval", 2.0),
+        "timeout": existing.get("timeout", 600.0),
+    }
+    print("AgentEval config setup")
+    api_url = _prompt("AgentEval API URL", defaults["api_url"])
+    gateway_url = _prompt("OpenClaw Gateway URL", defaults["gateway_url"])
+    agent_id = _prompt("OpenClaw agent id", defaults["agent_id"])
+    poll_interval = float(_prompt("Poll interval seconds", str(defaults["poll_interval"])))
+    timeout = float(_prompt("OpenClaw request timeout seconds", str(defaults["timeout"])))
+
+    config = {
+        "api_url": api_url,
+        "gateway_url": gateway_url,
+        "agent_id": agent_id,
+        "poll_interval": poll_interval,
+        "timeout": timeout,
+    }
+    path.write_text(json.dumps(config, indent=2))
+    print(f"Wrote config to {path}")
+    print("Tokens are read from env vars: AGENTEVAL_CONNECTOR_TOKEN and OPENCLAW_GATEWAY_TOKEN.")
+
+
+def _prompt(label: str, default: str) -> str:
+    prompt = f"{label} [{default}]: "
+    value = input(prompt).strip()
+    return value or default
+
+
+def _print_status(args: argparse.Namespace) -> None:
+    cfg = _load_config()
+    api_url = _pick_value(args.api_url, os.getenv("AGENTEVAL_API_URL"), cfg.get("api_url"))
+    gateway_url = _pick_value(args.gateway_url, os.getenv("OPENCLAW_GATEWAY_URL"), cfg.get("gateway_url"))
+    gateway_token = _pick_value(args.gateway_token, os.getenv("OPENCLAW_GATEWAY_TOKEN"), cfg.get("gateway_token"))
+
+    print("AgentEval status")
+    _print_check("AgentEval API URL", api_url)
+    _print_check("OpenClaw Gateway URL", gateway_url)
+    _print_check("AGENTEVAL_CONNECTOR_TOKEN", os.getenv("AGENTEVAL_CONNECTOR_TOKEN"))
+    _print_check("OPENCLAW_GATEWAY_TOKEN", gateway_token)
+
+    if api_url:
+        _check_http(f"{api_url.rstrip('/')}/healthz", "AgentEval API health")
+    if gateway_url:
+        _check_gateway(gateway_url.rstrip("/"), gateway_token)
+
+
+def _print_check(label: str, value: Any) -> None:
+    status = "OK" if value else "MISSING"
+    print(f"[{status}] {label}")
+
+
+def _check_http(url: str, label: str) -> None:
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(url)
+            if resp.status_code == 200:
+                print(f"[OK] {label}")
+                return
+            print(f"[FAIL] {label} (status {resp.status_code})")
+    except httpx.HTTPError as exc:
+        print(f"[FAIL] {label} ({exc})")
+
+
+def _check_gateway(gateway_url: str, token: str | None) -> None:
+    url = f"{gateway_url}/v1/models"
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(url)
+            if resp.status_code == 401 and token:
+                resp = client.get(url, headers={"Authorization": f"Bearer {token}"})
+            if resp.status_code == 200:
+                print("[OK] OpenClaw Gateway")
+                return
+            print(f"[FAIL] OpenClaw Gateway (status {resp.status_code})")
+    except httpx.HTTPError as exc:
+        print(f"[FAIL] OpenClaw Gateway ({exc})")
 
 
 if __name__ == "__main__":
