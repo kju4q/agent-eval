@@ -26,6 +26,15 @@ Status: Work in progress (early demo).
      - `agenteval connect --api-url http://localhost:8000 --gateway-url http://127.0.0.1:18789 --agent-id main --timeout 600`
    - Increase `--timeout` for large prompts or slow browsing tasks.
 
+## Single Command (API + Connector)
+Once config + tokens are set:
+```bash
+agenteval start
+```
+Flags:
+- `--api-host` / `--api-port` to override the API bind address
+- `--reload` to enable uvicorn auto-reload
+
 ## Config File
 `agenteval init` creates `~/.agenteval/config.json`:
 ```json

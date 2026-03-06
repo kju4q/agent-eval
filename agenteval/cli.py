@@ -4,10 +4,13 @@ import argparse
 import json
 import logging
 import os
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -52,6 +55,12 @@ def main() -> None:
     status.add_argument("--gateway-url", help="OpenClaw Gateway URL")
     status.add_argument("--gateway-token", help="OpenClaw Gateway token")
 
+    start = sub.add_parser("start", help="Start AgentEval API + connector")
+    start.add_argument("--api-url", help="AgentEval API base URL")
+    start.add_argument("--api-host", help="API host for uvicorn")
+    start.add_argument("--api-port", type=int, help="API port for uvicorn")
+    start.add_argument("--reload", action="store_true", help="Enable uvicorn auto-reload")
+
     args = parser.parse_args()
     if args.command == "connect":
         config = _resolve_connect_config(args)
@@ -62,6 +71,9 @@ def main() -> None:
         return
     if args.command == "status":
         _print_status(args)
+        return
+    if args.command == "start":
+        _start_services(args)
         return
 
 
@@ -174,22 +186,45 @@ def _load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
 
 def _resolve_connect_config(args: argparse.Namespace) -> ConnectorConfig:
     cfg = _load_config()
-    api_url = _pick_value(args.api_url, os.getenv("AGENTEVAL_API_URL"), cfg.get("api_url"))
-    api_token = _pick_value(args.api_token, os.getenv("AGENTEVAL_CONNECTOR_TOKEN"), cfg.get("api_token"))
+    api_url = _pick_value(
+        getattr(args, "api_url", None),
+        os.getenv("AGENTEVAL_API_URL"),
+        cfg.get("api_url"),
+    )
+    api_token = _pick_value(
+        getattr(args, "api_token", None),
+        os.getenv("AGENTEVAL_CONNECTOR_TOKEN"),
+        cfg.get("api_token"),
+    )
     gateway_url = _pick_value(
-        args.gateway_url,
+        getattr(args, "gateway_url", None),
         os.getenv("OPENCLAW_GATEWAY_URL"),
         cfg.get("gateway_url"),
         "http://127.0.0.1:18789",
     )
     gateway_token = _pick_value(
-        args.gateway_token,
+        getattr(args, "gateway_token", None),
         os.getenv("OPENCLAW_GATEWAY_TOKEN"),
         cfg.get("gateway_token"),
     )
-    agent_id = _pick_value(args.agent_id, os.getenv("OPENCLAW_AGENT_ID"), cfg.get("agent_id"), "main")
-    poll_interval = _pick_float(args.poll_interval, os.getenv("AGENTEVAL_POLL_INTERVAL"), cfg.get("poll_interval"), 2.0)
-    request_timeout = _pick_float(args.timeout, os.getenv("AGENTEVAL_TIMEOUT"), cfg.get("timeout"), 600.0)
+    agent_id = _pick_value(
+        getattr(args, "agent_id", None),
+        os.getenv("OPENCLAW_AGENT_ID"),
+        cfg.get("agent_id"),
+        "main",
+    )
+    poll_interval = _pick_float(
+        getattr(args, "poll_interval", None),
+        os.getenv("AGENTEVAL_POLL_INTERVAL"),
+        cfg.get("poll_interval"),
+        2.0,
+    )
+    request_timeout = _pick_float(
+        getattr(args, "timeout", None),
+        os.getenv("AGENTEVAL_TIMEOUT"),
+        cfg.get("timeout"),
+        600.0,
+    )
 
     missing = []
     if not api_url:
@@ -349,6 +384,88 @@ def _summarize_prompt(prompt: str, limit: int = 120) -> str:
     if len(single) <= limit:
         return single
     return f"{single[:limit]}..."
+
+
+def _start_services(args: argparse.Namespace) -> None:
+    logger = logging.getLogger("agenteval.connector")
+    config = _resolve_connect_config(args)
+    api_url = _pick_value(args.api_url, os.getenv("AGENTEVAL_API_URL"), config.api_url)
+    if not api_url:
+        raise SystemExit("Missing api_url (set AGENTEVAL_API_URL or run agenteval init)")
+    api_url = str(api_url).rstrip("/")
+    api_host, api_port = _parse_api_host_port(api_url)
+    if args.api_host:
+        api_host = args.api_host
+    if args.api_port:
+        api_port = args.api_port
+
+    started_api = False
+    api_process: subprocess.Popen[str] | None = None
+    if _api_health_ok(api_url):
+        logger.info("AgentEval API already running at %s", api_url)
+    else:
+        logger.info("Starting AgentEval API on %s:%s", api_host, api_port)
+        cmd = [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "server.app:app",
+            "--host",
+            api_host,
+            "--port",
+            str(api_port),
+        ]
+        if args.reload:
+            cmd.append("--reload")
+        api_process = subprocess.Popen(cmd)
+        started_api = True
+        _wait_for_api(api_url)
+
+    try:
+        run_connector(
+            ConnectorConfig(
+                api_url=api_url,
+                api_token=config.api_token,
+                gateway_url=config.gateway_url,
+                gateway_token=config.gateway_token,
+                agent_id=config.agent_id,
+                poll_interval=config.poll_interval,
+                request_timeout=config.request_timeout,
+            )
+        )
+    finally:
+        if started_api and api_process:
+            logger.info("Shutting down AgentEval API")
+            api_process.terminate()
+            try:
+                api_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                api_process.kill()
+
+
+def _parse_api_host_port(api_url: str) -> tuple[str, int]:
+    parsed = urlparse(api_url if "://" in api_url else f"http://{api_url}")
+    host = parsed.hostname or "0.0.0.0"
+    port = parsed.port or 8000
+    return host, port
+
+
+def _api_health_ok(api_url: str) -> bool:
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.get(f"{api_url.rstrip('/')}/healthz")
+            return resp.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+def _wait_for_api(api_url: str, timeout_s: float = 15.0) -> None:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if _api_health_ok(api_url):
+            return
+        time.sleep(0.5)
+    raise SystemExit(f"AgentEval API failed to start at {api_url}")
 
 
 if __name__ == "__main__":
