@@ -68,24 +68,37 @@ def main() -> None:
 def run_connector(config: ConnectorConfig) -> None:
     logger = logging.getLogger("agenteval.connector")
     headers = {"Authorization": f"Bearer {config.api_token}"}
-    logger.info("Connector started. Polling %s every %.1fs", config.api_url, config.poll_interval)
+    logger.info("Connector started")
+    logger.info("AgentEval API: %s", config.api_url)
+    logger.info("OpenClaw Gateway: %s (agent_id=%s)", config.gateway_url, config.agent_id)
+    _log_health_checks(config, headers)
+    logger.info("Polling every %.1fs", config.poll_interval)
+    last_wait_log = 0.0
     while True:
         job = _fetch_next_job(config.api_url, headers)
         if not job:
+            now = time.time()
+            if now - last_wait_log > 30:
+                logger.info("Waiting for jobs...")
+                last_wait_log = now
             time.sleep(config.poll_interval)
             continue
 
         job_id = job.get("id")
-        logger.info("Picked up job %s", job_id)
-        raw_output, error = _execute_job(config, job)
+        payload = job.get("payload", {})
+        prompt_summary = _summarize_prompt(payload.get("prompt") or "")
+        logger.info("Picked up job %s: %s", job_id, prompt_summary)
+        raw_output, error, elapsed = _execute_job(config, job)
         if error:
             logger.error("Job %s failed: %s", job_id, error)
         else:
-            logger.info("Job %s completed", job_id)
+            logger.info("Job %s completed in %.1fs", job_id, elapsed)
         _complete_job(config.api_url, headers, job["id"], raw_output, error)
+        logger.info("Submitted job %s result to API", job_id)
 
 
 def _fetch_next_job(api_url: str, headers: dict[str, str]) -> dict | None:
+    logger = logging.getLogger("agenteval.connector")
     try:
         with httpx.Client(timeout=10.0) as client:
             resp = client.get(f"{api_url}/v1/jobs/next", headers=headers)
@@ -93,11 +106,12 @@ def _fetch_next_job(api_url: str, headers: dict[str, str]) -> dict | None:
                 return None
             resp.raise_for_status()
             return resp.json()
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        logger.warning("Polling error: %s", exc)
         return None
 
 
-def _execute_job(config: ConnectorConfig, job: dict) -> tuple[str, str | None]:
+def _execute_job(config: ConnectorConfig, job: dict) -> tuple[str, str | None, float]:
     logger = logging.getLogger("agenteval.connector")
     payload = job.get("payload", {})
     prompt = payload.get("prompt") or ""
@@ -112,6 +126,7 @@ def _execute_job(config: ConnectorConfig, job: dict) -> tuple[str, str | None]:
         except (TypeError, ValueError):
             pass
 
+    start = time.time()
     try:
         logger.info("Sending job %s to OpenClaw (%s)", job.get("id"), payload.get("agent_id") or config.agent_id)
         response = chat_completions(
@@ -122,9 +137,12 @@ def _execute_job(config: ConnectorConfig, job: dict) -> tuple[str, str | None]:
             user=f"agenteval:{job['id']}",
             timeout_s=timeout_s,
         )
-        return response.text or json.dumps(response.raw), None
+        elapsed = time.time() - start
+        logger.info("OpenClaw responded in %.1fs", elapsed)
+        return response.text or json.dumps(response.raw), None, elapsed
     except Exception as exc:
-        return "", str(exc)
+        elapsed = time.time() - start
+        return "", str(exc), elapsed
 
 
 def _complete_job(
@@ -295,6 +313,42 @@ def _check_gateway(gateway_url: str, token: str | None) -> None:
             print(f"[FAIL] OpenClaw Gateway (status {resp.status_code})")
     except httpx.HTTPError as exc:
         print(f"[FAIL] OpenClaw Gateway ({exc})")
+
+
+def _log_health_checks(config: ConnectorConfig, headers: dict[str, str]) -> None:
+    logger = logging.getLogger("agenteval.connector")
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{config.api_url}/healthz")
+            if resp.status_code == 200:
+                logger.info("AgentEval API health OK")
+            else:
+                logger.warning("AgentEval API health check failed (%s)", resp.status_code)
+    except httpx.HTTPError as exc:
+        logger.warning("AgentEval API health check failed (%s)", exc)
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{config.gateway_url}/v1/models")
+            if resp.status_code == 401:
+                resp = client.get(
+                    f"{config.gateway_url}/v1/models",
+                    headers={"Authorization": f"Bearer {config.gateway_token}"},
+                )
+            if resp.status_code == 200:
+                logger.info("OpenClaw Gateway OK")
+            else:
+                logger.warning("OpenClaw Gateway check failed (%s)", resp.status_code)
+    except httpx.HTTPError as exc:
+        logger.warning("OpenClaw Gateway check failed (%s)", exc)
+
+
+def _summarize_prompt(prompt: str, limit: int = 120) -> str:
+    if not prompt:
+        return "(no prompt)"
+    single = " ".join(prompt.split())
+    if len(single) <= limit:
+        return single
+    return f"{single[:limit]}..."
 
 
 if __name__ == "__main__":
