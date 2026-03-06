@@ -2,20 +2,16 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timezone
 from urllib.parse import quote_plus
 
 import httpx
 
 from core.schema import EvidenceItem
+from server.ground_truth.utils import _normalize_query, _tokenize, _utc_now
 
 
 APPLE_BASE = "https://www.apple.com"
 APPLE_SEARCH = "https://www.apple.com/shop/search/{query}"
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def fetch_apple_evidence(query: str) -> list[EvidenceItem]:
@@ -94,14 +90,3 @@ def _maybe_variant_match(query: str, html: str) -> bool | None:
     if not query_tokens:
         return None
     return all(token in html.lower() for token in query_tokens[:3])
-
-
-def _tokenize(value: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", value.lower())
-
-
-def _normalize_query(value: str) -> str:
-    tokens = _tokenize(value)
-    if not tokens:
-        return value
-    return " ".join(tokens)

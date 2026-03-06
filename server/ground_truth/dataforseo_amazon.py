@@ -6,12 +6,12 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import httpx
 
 from core.schema import EvidenceItem
+from server.ground_truth.utils import _utc_now
 
 
 DATAFORSEO_BASE = "https://api.dataforseo.com/v3"
@@ -26,10 +26,6 @@ class AmazonCandidate:
     asin: str
     url: str
     price: float | None
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def fetch_amazon_evidence(query: str) -> list[EvidenceItem]:

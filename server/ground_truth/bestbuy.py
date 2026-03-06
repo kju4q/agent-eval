@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
 import re
 from urllib.parse import quote_plus
 
 import httpx
 
 from core.schema import EvidenceItem
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from server.ground_truth.utils import _normalize_query, _tokenize, _utc_now
 
 
 def fetch_bestbuy_evidence(query: str) -> list[EvidenceItem]:
@@ -74,14 +70,3 @@ def _variant_match(query: str, name: str) -> bool | None:
         return None
     name_tokens = set(_tokenize(name))
     return all(token in name_tokens for token in query_tokens[:4])
-
-
-def _tokenize(value: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", value.lower())
-
-
-def _normalize_query(value: str) -> str:
-    tokens = _tokenize(value)
-    if not tokens:
-        return value
-    return " ".join(tokens)

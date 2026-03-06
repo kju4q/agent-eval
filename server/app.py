@@ -40,7 +40,10 @@ def healthz() -> dict[str, str]:
 
 
 @app.post("/v1/jobs", response_model=JobResponse)
-def create_job(payload: CreateJobPayload) -> JobResponse:
+def create_job(
+    payload: CreateJobPayload,
+    _: None = Depends(_require_connector_token),
+) -> JobResponse:
     job_id = str(uuid.uuid4())
     record = store.create_job(job_id, payload.model_dump())
     return JobResponse(
