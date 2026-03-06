@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import re
 import time
@@ -32,20 +33,24 @@ def _utc_now() -> str:
 
 
 def fetch_amazon_evidence(query: str) -> list[EvidenceItem]:
+    logger = logging.getLogger("agenteval.ground_truth")
     auth_header = _build_auth_header()
     if not auth_header:
         return []
 
     task_id = _post_products_task(query, auth_header)
     if not task_id:
+        logger.warning("DataForSEO Amazon products task did not return an id.")
         return []
 
     product_payload = _poll_task(f"/merchant/amazon/products/task_get/advanced/{task_id}", auth_header)
     if not product_payload:
+        logger.warning("DataForSEO Amazon products task returned no payload.")
         return []
 
     candidates = _extract_amazon_candidates(product_payload)
     if not candidates:
+        logger.warning("DataForSEO Amazon products task returned no candidates.")
         return []
 
     evidence: list[EvidenceItem] = []
@@ -147,14 +152,17 @@ def _request(
 ) -> dict[str, Any] | None:
     url = f"{DATAFORSEO_BASE}{path}"
     headers = {"Authorization": auth_header, "Content-Type": "application/json"}
+    logger = logging.getLogger("agenteval.ground_truth")
     try:
         with httpx.Client(timeout=20.0) as client:
             resp = client.request(method, url, json=json_payload, headers=headers)
             resp.raise_for_status()
             return resp.json()
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        logger.warning("DataForSEO request failed: %s", exc)
         return None
-    except ValueError:
+    except ValueError as exc:
+        logger.warning("DataForSEO returned invalid JSON: %s", exc)
         return None
 
 
@@ -260,7 +268,7 @@ def _parse_price_value(value: Any) -> float | None:
             if parsed is not None:
                 return parsed
     if isinstance(value, str):
-        match = re.search(r"([0-9]+(?:\\.[0-9]{2})?)", value.replace(",", ""))
+        match = re.search(r"([0-9]+(?:\.[0-9]{2})?)", value.replace(",", ""))
         if match:
             try:
                 return float(match.group(1))

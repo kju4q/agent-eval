@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 from urllib.parse import quote_plus
@@ -18,13 +19,15 @@ def _utc_now() -> str:
 
 
 def fetch_apple_evidence(query: str) -> list[EvidenceItem]:
+    logger = logging.getLogger("agenteval.ground_truth")
     search_url = APPLE_SEARCH.format(query=quote_plus(_normalize_query(query)))
     try:
         with httpx.Client(timeout=12.0, follow_redirects=True) as client:
             resp = client.get(search_url)
             resp.raise_for_status()
             html = resp.text
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        logger.warning("Apple search request failed: %s", exc)
         return []
 
     product_url = _extract_product_url(html)
@@ -36,7 +39,8 @@ def fetch_apple_evidence(query: str) -> list[EvidenceItem]:
             resp = client.get(product_url)
             resp.raise_for_status()
             product_html = resp.text
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        logger.warning("Apple product request failed: %s", exc)
         return []
 
     price = _extract_price(product_html)
@@ -71,7 +75,7 @@ def _extract_product_url(html: str) -> str | None:
 
 
 def _extract_price(html: str) -> float | None:
-    match = re.search(r"\\$\\s?([0-9]+(?:\\.[0-9]{2})?)", html)
+    match = re.search(r"\$\s?([0-9]+(?:\.[0-9]{2})?)", html)
     if not match:
         return None
     try:

@@ -598,6 +598,12 @@ def format_currency(value: Optional[float]) -> str:
     return f"${value:,.2f}"
 
 
+def format_confidence(value: Optional[float]) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.2f}"
+
+
 def _get_eval_field(eval_result, field: str):
     if eval_result is None:
         return None
@@ -1303,8 +1309,16 @@ def show_results():
 
     with row2_left:
         if eval_result is not None:
+            best_price = _get_eval_field(eval_result, "best_first_party_price_usd")
+            best_retailer = _get_eval_field(eval_result, "best_first_party_retailer")
+            best_source = _get_eval_field(eval_result, "best_first_party_source_type")
+            best_conf = _get_eval_field(eval_result, "best_first_party_confidence")
+            best_url = _get_eval_field(eval_result, "best_first_party_url")
             chosen_retailer = _get_eval_field(eval_result, "agent_chosen_retailer")
             chosen_price = _get_eval_field(eval_result, "agent_chosen_price_usd")
+            chosen_url = _get_eval_field(eval_result, "agent_chosen_url")
+            chosen_verified = _get_eval_field(eval_result, "agent_choice_verified")
+            disputed_price = _get_eval_field(eval_result, "disputed_price")
             if chosen_retailer or chosen_price is not None:
                 chosen_label = f"{chosen_retailer or 'Unknown'}"
                 chosen_value = format_currency(chosen_price)
@@ -1331,11 +1345,27 @@ def show_results():
                     <div class="metric-grid">
                             <div class="metric-item">
                                 <div class="metric-label">Best first-party price</div>
-                                <div class="metric-value">{format_currency(_get_eval_field(eval_result, "best_first_party_price_usd"))}</div>
+                                <div class="metric-value">{format_currency(best_price)}</div>
+                            </div>
+                            <div class="metric-item">
+                                <div class="metric-label">Best price source</div>
+                                <div class="metric-value">{best_retailer or 'N/A'}</div>
+                            </div>
+                            <div class="metric-item">
+                                <div class="metric-label">Confidence</div>
+                                <div class="metric-value">{format_confidence(best_conf)}</div>
+                            </div>
+                            <div class="metric-item">
+                                <div class="metric-label">Evidence type</div>
+                                <div class="metric-value">{best_source or 'N/A'}</div>
                             </div>
                         <div class="metric-item">
                             <div class="metric-label">Agent choice</div>
                             <div class="metric-value">{chosen_label} · {chosen_value}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Agent choice verification</div>
+                            <div class="metric-value">{'Verified' if chosen_verified else 'Unverified' if chosen_verified is False else 'N/A'}</div>
                         </div>
                         <div class="metric-item">
                             <div class="metric-label">Within budget</div>
@@ -1348,6 +1378,10 @@ def show_results():
                         <div class="metric-item">
                             <div class="metric-label">Price accuracy</div>
                             <div class="metric-value">{price_score_value}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Price dispute</div>
+                            <div class="metric-value">{'Yes' if disputed_price else 'No' if disputed_price is False else 'N/A'}</div>
                         </div>
                     </div>
                 </div>

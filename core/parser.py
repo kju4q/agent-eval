@@ -216,7 +216,6 @@ def _parse_chosen_block(lines: list[str], idx: int) -> Optional[ParsedOffer]:
                 listing_id_type=None,
             )
     return None
-    return None
 
 
 def _parse_within_budget_by_lines(lines: list[str]) -> Optional[bool]:

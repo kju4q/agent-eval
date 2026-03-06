@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Optional
 
 from .parser import ParsedOffer, parse_agent_output
@@ -11,12 +12,19 @@ from .schema import CaseStudy, EvidenceItem, TaskRules
 class EvaluationResult:
     best_first_party_price_usd: Optional[float]
     best_first_party_retailer: Optional[str]
+    best_first_party_url: Optional[str]
+    best_first_party_confidence: Optional[float]
+    best_first_party_source_type: Optional[str]
+    best_first_party_seller: Optional[str]
     agent_chosen_price_usd: Optional[float]
     agent_chosen_retailer: Optional[str]
+    agent_chosen_url: Optional[str]
     agent_choice_qualified: Optional[bool]
+    agent_choice_verified: Optional[bool]
     found_best_first_party_price: Optional[bool]
     within_budget: Optional[bool]
     money_left_on_table_usd: Optional[float]
+    disputed_price: Optional[bool]
 
 
 def evaluate_case_study(case_study: CaseStudy) -> EvaluationResult:
@@ -38,29 +46,37 @@ def evaluate_case_study(case_study: CaseStudy) -> EvaluationResult:
 
     agent_chosen_price = None
     agent_chosen_retailer = None
+    agent_chosen_url = None
     if chosen_offer:
         agent_chosen_price = chosen_offer.price_usd
         agent_chosen_retailer = chosen_offer.retailer
+        agent_chosen_url = chosen_offer.url
     if chosen_evidence and chosen_evidence.price_usd is not None:
         agent_chosen_price = chosen_evidence.price_usd
         agent_chosen_retailer = chosen_evidence.retailer
+        agent_chosen_url = chosen_evidence.url
 
     agent_choice_qualified = None
     if chosen_evidence is not None:
         agent_choice_qualified = _qualifies(chosen_evidence, case_study.task.rules)
+    agent_choice_verified = None
+    if chosen_offer:
+        agent_choice_verified = chosen_evidence is not None
 
     found_best = None
     if best_item and agent_chosen_price is not None:
         if agent_choice_qualified is False:
             found_best = False
+        elif agent_choice_verified is False:
+            found_best = None
         else:
             found_best = _prices_equal(agent_chosen_price, best_item.price_usd)
-            if agent_chosen_retailer and best_item.retailer:
-                found_best = found_best and agent_chosen_retailer == best_item.retailer
 
     within_budget = None
     if case_study.task.budget_usd is not None and agent_chosen_price is not None:
         within_budget = agent_chosen_price <= case_study.task.budget_usd
+    if within_budget is None:
+        within_budget = parsed.within_budget
 
     money_left = None
     if (
@@ -68,19 +84,36 @@ def evaluate_case_study(case_study: CaseStudy) -> EvaluationResult:
         and best_item.price_usd is not None
         and agent_chosen_price is not None
         and agent_choice_qualified is not False
+        and agent_choice_verified is not False
     ):
         delta = agent_chosen_price - best_item.price_usd
         money_left = round(delta, 2) if delta > 0 else 0.0
 
+    disputed_price = None
+    if (
+        best_item
+        and best_item.price_usd is not None
+        and agent_chosen_price is not None
+        and agent_choice_verified is False
+    ):
+        disputed_price = agent_chosen_price < best_item.price_usd - 0.01
+
     return EvaluationResult(
         best_first_party_price_usd=best_item.price_usd if best_item else None,
         best_first_party_retailer=best_item.retailer if best_item else None,
+        best_first_party_url=best_item.url if best_item else None,
+        best_first_party_confidence=best_item.confidence if best_item else None,
+        best_first_party_source_type=best_item.source_type if best_item else None,
+        best_first_party_seller=best_item.seller if best_item else None,
         agent_chosen_price_usd=agent_chosen_price,
         agent_chosen_retailer=agent_chosen_retailer,
+        agent_chosen_url=agent_chosen_url,
         agent_choice_qualified=agent_choice_qualified,
+        agent_choice_verified=agent_choice_verified,
         found_best_first_party_price=found_best,
         within_budget=within_budget,
         money_left_on_table_usd=money_left,
+        disputed_price=disputed_price,
     )
 
 
@@ -133,11 +166,40 @@ def _match_offer_to_evidence(
 ) -> Optional[EvidenceItem]:
     if offer is None:
         return None
+    if not evidence:
+        return None
     if offer.url:
         for item in evidence:
             if item.url == offer.url:
                 return item
-    if offer.retailer:
+    offer_listing_id = offer.listing_id
+    offer_listing_id_type = offer.listing_id_type
+    if not offer_listing_id and offer.url:
+        extracted = _extract_listing_id_from_url(offer.url, offer.retailer)
+        if extracted:
+            offer_listing_id, offer_listing_id_type = extracted
+    offer_listing_id = _normalize_listing_id(offer_listing_id, offer_listing_id_type)
+    if offer_listing_id:
+        candidates = [
+            item
+            for item in evidence
+            if _normalize_listing_id(item.listing_id, item.listing_id_type) == offer_listing_id
+        ]
+        if offer_listing_id_type:
+            typed = [item for item in candidates if item.listing_id_type == offer_listing_id_type]
+            if typed:
+                candidates = typed
+        if candidates:
+            return max(candidates, key=_confidence_key)
+    if offer.retailer and offer.price_usd is not None:
+        matches = [
+            item
+            for item in evidence
+            if item.retailer == offer.retailer and _prices_equal(item.price_usd, offer.price_usd)
+        ]
+        if len(matches) == 1:
+            return max(matches, key=_confidence_key)
+    if offer.retailer and offer.url is None and offer_listing_id is None and offer.price_usd is None:
         matches = [item for item in evidence if item.retailer == offer.retailer]
         if len(matches) == 1:
             return matches[0]
@@ -152,3 +214,53 @@ def _filter_by_confidence(evidence: list[EvidenceItem]) -> list[EvidenceItem]:
         if high_conf:
             return high_conf
     return evidence
+
+
+def _confidence_key(item: EvidenceItem) -> float:
+    return item.confidence or 0.0
+
+
+def _normalize_listing_id(listing_id: Optional[str], listing_id_type: Optional[str]) -> Optional[str]:
+    if not listing_id:
+        return None
+    if listing_id_type in {"asin", "apple_sku"}:
+        return listing_id.upper()
+    return listing_id
+
+
+def _extract_listing_id_from_url(
+    url: str,
+    retailer: Optional[str],
+) -> Optional[tuple[str, str]]:
+    normalized_retailer = (retailer or _infer_retailer_from_url(url) or "").strip().lower()
+    if normalized_retailer in {"best buy", "bestbuy"}:
+        for pattern in [
+            r"/sku/(\d+)",
+            r"skuid=(\d+)",
+            r"/click/-/(\d+)/pdp",
+            r"/(\d+)\.p",
+        ]:
+            match = re.search(pattern, url, flags=re.IGNORECASE)
+            if match:
+                return match.group(1), "sku"
+    if normalized_retailer == "amazon":
+        for pattern in [r"/dp/([A-Z0-9]{10})", r"/gp/product/([A-Z0-9]{10})"]:
+            match = re.search(pattern, url, flags=re.IGNORECASE)
+            if match:
+                return match.group(1).upper(), "asin"
+    if normalized_retailer == "apple":
+        match = re.search(r"/shop/product/([^/]+)/", url, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).upper(), "apple_sku"
+    return None
+
+
+def _infer_retailer_from_url(url: str) -> Optional[str]:
+    lowered = url.lower()
+    if "bestbuy." in lowered:
+        return "best buy"
+    if "amazon." in lowered:
+        return "amazon"
+    if "apple.com" in lowered:
+        return "apple"
+    return None
