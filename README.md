@@ -63,6 +63,8 @@ Tokens are read from env vars (see below).
 - `BESTBUY_API_KEY` (optional) — enables Best Buy price evidence.
 - `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` (optional) — enables Amazon price evidence via DataForSEO.
 - `AGENTEVAL_DATAFORSEO_DAILY_CALL_CAP` (optional, default `200`) — max DataForSEO calls per UTC day before fetches are blocked.
+- `AGENTEVAL_DATAFORSEO_DAILY_USD_CAP` (optional, default `10.0`) — max estimated DataForSEO spend per UTC day before fetches are blocked.
+- `AGENTEVAL_DATAFORSEO_COST_PER_CALL_USD` (optional, default `0.05`) — estimated USD cost used for daily spend accounting.
 - `AGENTEVAL_EVIDENCE_KILL_SWITCH` (optional, default off) — hard-stop all paid evidence fetching.
 - `AGENTEVAL_IP_WINDOW_SECONDS` (optional, default `60`) — window size for IP job-create throttling.
 - `AGENTEVAL_IP_MAX_JOBS_PER_WINDOW` (optional, default `20`) — max job creates per IP per window.

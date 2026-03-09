@@ -117,7 +117,7 @@ def v1_healthz() -> dict[str, str]:
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONResponse:
-    LOGGER.exception("Unhandled server error: %s", exc)
+    LOGGER.error("Unhandled server error (%s): %s", exc.__class__.__name__, str(exc))
     return JSONResponse(status_code=500, content={"detail": "Internal server error."})
 
 

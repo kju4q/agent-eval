@@ -12,8 +12,12 @@ from server.ground_truth.dataforseo_amazon import fetch_amazon_evidence
 from server.ground_truth.spend import (
     PROVIDER_DATAFORSEO,
     consume,
+    consume_spend_usd,
+    current_spend_usd,
     current_usage,
+    dataforseo_cost_per_call_usd,
     dataforseo_daily_cap,
+    dataforseo_daily_usd_cap,
     is_kill_switch_enabled,
 )
 from server.ground_truth.types import GroundTruthResult, ProviderFetchStatus
@@ -69,6 +73,9 @@ def fetch_evidence_with_status(payload: dict) -> GroundTruthResult:
         password = os.getenv("DATAFORSEO_PASSWORD")
         cap = dataforseo_daily_cap()
         used = current_usage(PROVIDER_DATAFORSEO)
+        spend_cap = dataforseo_daily_usd_cap()
+        spend_used = current_spend_usd(PROVIDER_DATAFORSEO)
+        est_call_cost = dataforseo_cost_per_call_usd()
         if is_kill_switch_enabled():
             statuses.append(
                 ProviderFetchStatus(
@@ -77,6 +84,8 @@ def fetch_evidence_with_status(payload: dict) -> GroundTruthResult:
                     detail="Evidence kill switch is enabled.",
                     calls_today=used,
                     daily_cap=cap,
+                    spend_usd_today=spend_used,
+                    daily_spend_cap_usd=spend_cap,
                 )
             )
         elif not login or not password:
@@ -87,6 +96,20 @@ def fetch_evidence_with_status(payload: dict) -> GroundTruthResult:
                     detail="DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD are not configured.",
                     calls_today=used,
                     daily_cap=cap,
+                    spend_usd_today=spend_used,
+                    daily_spend_cap_usd=spend_cap,
+                )
+            )
+        elif spend_used >= spend_cap:
+            statuses.append(
+                ProviderFetchStatus(
+                    provider="dataforseo",
+                    state="blocked",
+                    detail="Daily DataForSEO spend cap reached.",
+                    calls_today=used,
+                    daily_cap=cap,
+                    spend_usd_today=spend_used,
+                    daily_spend_cap_usd=spend_cap,
                 )
             )
         elif used >= cap:
@@ -97,16 +120,25 @@ def fetch_evidence_with_status(payload: dict) -> GroundTruthResult:
                     detail="Daily DataForSEO call cap reached.",
                     calls_today=used,
                     daily_cap=cap,
+                    spend_usd_today=spend_used,
+                    daily_spend_cap_usd=spend_cap,
                 )
             )
         else:
             amazon_items = fetch_amazon_evidence(product_name)
             used_after = consume(PROVIDER_DATAFORSEO, amount=1)
+            spend_after = consume_spend_usd(PROVIDER_DATAFORSEO, est_call_cost)
             if used_after >= int(cap * 0.8):
                 LOGGER.warning(
                     "DataForSEO usage near cap: %s/%s calls today.",
                     used_after,
                     cap,
+                )
+            if spend_after >= (spend_cap * 0.8):
+                LOGGER.warning(
+                    "DataForSEO spend near cap: $%.4f/$%.4f today.",
+                    spend_after,
+                    spend_cap,
                 )
             evidence.extend(amazon_items)
             statuses.append(
@@ -116,6 +148,8 @@ def fetch_evidence_with_status(payload: dict) -> GroundTruthResult:
                     detail=None if amazon_items else "No Amazon evidence returned.",
                     calls_today=used_after,
                     daily_cap=cap,
+                    spend_usd_today=spend_after,
+                    daily_spend_cap_usd=spend_cap,
                 )
             )
 

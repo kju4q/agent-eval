@@ -126,6 +126,17 @@ class JobStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS provider_spend (
+                    provider TEXT NOT NULL,
+                    usage_day TEXT NOT NULL,
+                    usd_total REAL NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (provider, usage_day)
+                )
+                """
+            )
 
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
             if "session_id" not in columns:
@@ -410,6 +421,51 @@ class JobStore:
                     (calls, now, provider, usage_day),
                 )
         return calls
+
+    def get_provider_spend_usd(self, provider: str, usage_day: str) -> float:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT usd_total FROM provider_spend
+                WHERE provider = ? AND usage_day = ?
+                """,
+                (provider, usage_day),
+            ).fetchone()
+        if not row:
+            return 0.0
+        return float(row["usd_total"])
+
+    def increment_provider_spend_usd(self, provider: str, usage_day: str, amount_usd: float) -> float:
+        amount_usd = max(0.0, float(amount_usd))
+        now = _utc_now()
+        with self._connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT usd_total FROM provider_spend
+                WHERE provider = ? AND usage_day = ?
+                """,
+                (provider, usage_day),
+            ).fetchone()
+            if existing is None:
+                total = amount_usd
+                conn.execute(
+                    """
+                    INSERT INTO provider_spend (provider, usage_day, usd_total, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (provider, usage_day, total, now),
+                )
+            else:
+                total = float(existing["usd_total"]) + amount_usd
+                conn.execute(
+                    """
+                    UPDATE provider_spend
+                    SET usd_total = ?, updated_at = ?
+                    WHERE provider = ? AND usage_day = ?
+                    """,
+                    (total, now, provider, usage_day),
+                )
+        return total
 
 
 def _row_to_job(row: sqlite3.Row) -> JobRecord:
