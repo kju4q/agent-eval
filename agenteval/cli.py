@@ -40,7 +40,7 @@ def main() -> None:
 
     connect = sub.add_parser("connect", help="Start the AgentEval connector")
     connect.add_argument("--api-url", help="AgentEval API base URL")
-    connect.add_argument("--api-token", help="AgentEval connector token")
+    connect.add_argument("--api-token", help="AgentEval session token")
     connect.add_argument("--gateway-url", help="OpenClaw Gateway URL")
     connect.add_argument("--gateway-token", help="OpenClaw Gateway token")
     connect.add_argument("--agent-id", help="OpenClaw agent id")
@@ -61,6 +61,11 @@ def main() -> None:
     start.add_argument("--api-port", type=int, help="API port for uvicorn")
     start.add_argument("--reload", action="store_true", help="Enable uvicorn auto-reload")
 
+    session = sub.add_parser("session", help="Create a session token for API/connector")
+    session.add_argument("--api-url", help="AgentEval API base URL")
+    session.add_argument("--ttl-seconds", type=int, default=86400, help="Session TTL (seconds)")
+    session.add_argument("--max-evals", type=int, default=25, help="Max evals for the session")
+
     args = parser.parse_args()
     if args.command == "connect":
         config = _resolve_connect_config(args)
@@ -74,6 +79,9 @@ def main() -> None:
         return
     if args.command == "start":
         _start_services(args)
+        return
+    if args.command == "session":
+        _create_session_command(args)
         return
 
 
@@ -193,7 +201,7 @@ def _resolve_connect_config(args: argparse.Namespace) -> ConnectorConfig:
     )
     api_token = _pick_value(
         getattr(args, "api_token", None),
-        os.getenv("AGENTEVAL_CONNECTOR_TOKEN"),
+        os.getenv("AGENTEVAL_SESSION_TOKEN"),
         cfg.get("api_token"),
     )
     gateway_url = _pick_value(
@@ -230,7 +238,7 @@ def _resolve_connect_config(args: argparse.Namespace) -> ConnectorConfig:
     if not api_url:
         missing.append("api_url")
     if not api_token:
-        missing.append("api_token (AGENTEVAL_CONNECTOR_TOKEN)")
+        missing.append("api_token (AGENTEVAL_SESSION_TOKEN)")
     if not gateway_token:
         missing.append("gateway_token (OPENCLAW_GATEWAY_TOKEN)")
     if missing:
@@ -291,7 +299,7 @@ def _init_config(path: Path) -> None:
     }
     path.write_text(json.dumps(config, indent=2))
     print(f"Wrote config to {path}")
-    print("Tokens are read from env vars: AGENTEVAL_CONNECTOR_TOKEN and OPENCLAW_GATEWAY_TOKEN.")
+    print("Tokens are read from env vars: AGENTEVAL_SESSION_TOKEN and OPENCLAW_GATEWAY_TOKEN.")
 
 
 def _prompt(label: str, default: str) -> str:
@@ -306,14 +314,25 @@ def _print_status(args: argparse.Namespace) -> None:
     gateway_url = _pick_value(args.gateway_url, os.getenv("OPENCLAW_GATEWAY_URL"), cfg.get("gateway_url"))
     gateway_token = _pick_value(args.gateway_token, os.getenv("OPENCLAW_GATEWAY_TOKEN"), cfg.get("gateway_token"))
 
+    session_token = _pick_value(
+        os.getenv("AGENTEVAL_SESSION_TOKEN"),
+        cfg.get("api_token"),
+    )
+
     print("AgentEval status")
     _print_check("AgentEval API URL", api_url)
     _print_check("OpenClaw Gateway URL", gateway_url)
-    _print_check("AGENTEVAL_CONNECTOR_TOKEN", os.getenv("AGENTEVAL_CONNECTOR_TOKEN"))
+    _print_check("AGENTEVAL_SESSION_TOKEN", session_token)
     _print_check("OPENCLAW_GATEWAY_TOKEN", gateway_token)
 
     if api_url:
         _check_http(f"{api_url.rstrip('/')}/healthz", "AgentEval API health")
+        if session_token:
+            _check_http_auth(
+                f"{api_url.rstrip('/')}/v1/sessions/me",
+                "AgentEval session",
+                session_token,
+            )
     if gateway_url:
         _check_gateway(gateway_url.rstrip("/"), gateway_token)
 
@@ -327,6 +346,18 @@ def _check_http(url: str, label: str) -> None:
     try:
         with httpx.Client(timeout=5.0) as client:
             resp = client.get(url)
+            if resp.status_code == 200:
+                print(f"[OK] {label}")
+                return
+            print(f"[FAIL] {label} (status {resp.status_code})")
+    except httpx.HTTPError as exc:
+        print(f"[FAIL] {label} ({exc})")
+
+
+def _check_http_auth(url: str, label: str, token: str) -> None:
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(url, headers={"Authorization": f"Bearer {token}"})
             if resp.status_code == 200:
                 print(f"[OK] {label}")
                 return
@@ -466,6 +497,40 @@ def _wait_for_api(api_url: str, timeout_s: float = 15.0) -> None:
             return
         time.sleep(0.5)
     raise SystemExit(f"AgentEval API failed to start at {api_url}")
+
+
+def _create_session_command(args: argparse.Namespace) -> None:
+    cfg = _load_config()
+    api_url = _pick_value(args.api_url, os.getenv("AGENTEVAL_API_URL"), cfg.get("api_url"))
+    if not api_url:
+        raise SystemExit("Missing api_url (set AGENTEVAL_API_URL, run agenteval init, or pass --api-url)")
+    api_url = str(api_url).rstrip("/")
+
+    headers: dict[str, str] = {}
+    bootstrap = os.getenv("AGENTEVAL_SESSION_BOOTSTRAP_TOKEN")
+    if bootstrap:
+        headers["X-AgentEval-Bootstrap"] = bootstrap
+
+    payload = {"ttl_seconds": int(args.ttl_seconds), "max_evals": int(args.max_evals)}
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(f"{api_url}/v1/sessions", json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPError as exc:
+        raise SystemExit(f"Failed to create session: {exc}")
+
+    token = data.get("session_token")
+    session_id = data.get("session_id")
+    expires_at = data.get("expires_at")
+    max_evals = data.get("max_evals")
+    print("Session created")
+    print(f"  session_id: {session_id}")
+    print(f"  expires_at: {expires_at}")
+    print(f"  max_evals: {max_evals}")
+    print("")
+    print("Export token for connector/UI:")
+    print(f'  export AGENTEVAL_SESSION_TOKEN=\"{token}\"')
 
 
 if __name__ == "__main__":

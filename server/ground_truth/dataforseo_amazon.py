@@ -11,14 +11,17 @@ from typing import Any, Iterable
 import httpx
 
 from core.schema import EvidenceItem
+from server.ground_truth.safe_http import EgressPolicyError, safe_request
 from server.ground_truth.utils import _utc_now
 
 
 DATAFORSEO_BASE = "https://api.dataforseo.com/v3"
+DATAFORSEO_ALLOWED_HOSTS = {"api.dataforseo.com"}
 DEFAULT_LOCATION_CODE = 2840  # United States
 DEFAULT_LANGUAGE_CODE = "en_US"
 POLL_ATTEMPTS = 20
 POLL_SLEEP_S = 3.0
+LOGGER = logging.getLogger("agenteval.ground_truth")
 
 
 @dataclass(frozen=True)
@@ -29,24 +32,23 @@ class AmazonCandidate:
 
 
 def fetch_amazon_evidence(query: str) -> list[EvidenceItem]:
-    logger = logging.getLogger("agenteval.ground_truth")
     auth_header = _build_auth_header()
     if not auth_header:
         return []
 
     task_id = _post_products_task(query, auth_header)
     if not task_id:
-        logger.warning("DataForSEO Amazon products task did not return an id.")
+        LOGGER.warning("DataForSEO Amazon products task did not return an id.")
         return []
 
     product_payload = _poll_task(f"/merchant/amazon/products/task_get/advanced/{task_id}", auth_header)
     if not product_payload:
-        logger.warning("DataForSEO Amazon products task returned no payload.")
+        LOGGER.warning("DataForSEO Amazon products task returned no payload.")
         return []
 
     candidates = _extract_amazon_candidates(product_payload)
     if not candidates:
-        logger.warning("DataForSEO Amazon products task returned no candidates.")
+        LOGGER.warning("DataForSEO Amazon products task returned no candidates.")
         return []
 
     evidence: list[EvidenceItem] = []
@@ -148,17 +150,26 @@ def _request(
 ) -> dict[str, Any] | None:
     url = f"{DATAFORSEO_BASE}{path}"
     headers = {"Authorization": auth_header, "Content-Type": "application/json"}
-    logger = logging.getLogger("agenteval.ground_truth")
     try:
         with httpx.Client(timeout=20.0) as client:
-            resp = client.request(method, url, json=json_payload, headers=headers)
+            resp = safe_request(
+                client,
+                method,
+                url,
+                allowed_hosts=DATAFORSEO_ALLOWED_HOSTS,
+                json=json_payload,
+                headers=headers,
+            )
             resp.raise_for_status()
             return resp.json()
+    except EgressPolicyError as exc:
+        LOGGER.warning("DataForSEO egress blocked: %s", exc)
+        return None
     except httpx.HTTPError as exc:
-        logger.warning("DataForSEO request failed: %s", exc)
+        LOGGER.warning("DataForSEO request failed: %s", exc)
         return None
     except ValueError as exc:
-        logger.warning("DataForSEO returned invalid JSON: %s", exc)
+        LOGGER.warning("DataForSEO returned invalid JSON: %s", exc)
         return None
 
 

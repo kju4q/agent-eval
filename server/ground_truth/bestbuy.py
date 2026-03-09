@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from urllib.parse import quote_plus
 
 import httpx
 
 from core.schema import EvidenceItem
+from server.ground_truth.safe_http import EgressPolicyError, safe_request
 from server.ground_truth.utils import _normalize_query, _tokenize, _utc_now
+
+LOGGER = logging.getLogger("agenteval.ground_truth")
+BESTBUY_ALLOWED_HOSTS = {"api.bestbuy.com"}
 
 
 def fetch_bestbuy_evidence(query: str) -> list[EvidenceItem]:
@@ -16,7 +19,6 @@ def fetch_bestbuy_evidence(query: str) -> list[EvidenceItem]:
     if not api_key:
         return []
 
-    logger = logging.getLogger("agenteval.ground_truth")
     normalized = _normalize_query(query)
     search_value = f"\"{normalized}\"" if normalized else ""
     query = quote_plus(search_value)
@@ -29,14 +31,23 @@ def fetch_bestbuy_evidence(query: str) -> list[EvidenceItem]:
     }
     try:
         with httpx.Client(timeout=12.0) as client:
-            resp = client.get(url.format(query=query), params=params)
+            resp = safe_request(
+                client,
+                "GET",
+                url.format(query=query),
+                allowed_hosts=BESTBUY_ALLOWED_HOSTS,
+                params=params,
+            )
             resp.raise_for_status()
             data = resp.json()
+    except EgressPolicyError as exc:
+        LOGGER.warning("Best Buy API egress blocked: %s", exc)
+        return []
     except httpx.HTTPError as exc:
-        logger.warning("Best Buy API request failed: %s", exc)
+        LOGGER.warning("Best Buy API request failed: %s", exc)
         return []
     except ValueError as exc:
-        logger.warning("Best Buy API returned invalid JSON: %s", exc)
+        LOGGER.warning("Best Buy API returned invalid JSON: %s", exc)
         return []
 
     results = []

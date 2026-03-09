@@ -7,23 +7,33 @@ from urllib.parse import quote_plus
 import httpx
 
 from core.schema import EvidenceItem
+from server.ground_truth.safe_http import EgressPolicyError, safe_request
 from server.ground_truth.utils import _normalize_query, _tokenize, _utc_now
 
 
 APPLE_BASE = "https://www.apple.com"
 APPLE_SEARCH = "https://www.apple.com/shop/search/{query}"
+APPLE_ALLOWED_HOSTS = {"apple.com", "www.apple.com"}
+LOGGER = logging.getLogger("agenteval.ground_truth")
 
 
 def fetch_apple_evidence(query: str) -> list[EvidenceItem]:
-    logger = logging.getLogger("agenteval.ground_truth")
     search_url = APPLE_SEARCH.format(query=quote_plus(_normalize_query(query)))
     try:
         with httpx.Client(timeout=12.0, follow_redirects=True) as client:
-            resp = client.get(search_url)
+            resp = safe_request(
+                client,
+                "GET",
+                search_url,
+                allowed_hosts=APPLE_ALLOWED_HOSTS,
+            )
             resp.raise_for_status()
             html = resp.text
+    except EgressPolicyError as exc:
+        LOGGER.warning("Apple egress blocked: %s", exc)
+        return []
     except httpx.HTTPError as exc:
-        logger.warning("Apple search request failed: %s", exc)
+        LOGGER.warning("Apple search request failed: %s", exc)
         return []
 
     product_url = _extract_product_url(html)
@@ -32,11 +42,19 @@ def fetch_apple_evidence(query: str) -> list[EvidenceItem]:
 
     try:
         with httpx.Client(timeout=12.0, follow_redirects=True) as client:
-            resp = client.get(product_url)
+            resp = safe_request(
+                client,
+                "GET",
+                product_url,
+                allowed_hosts=APPLE_ALLOWED_HOSTS,
+            )
             resp.raise_for_status()
             product_html = resp.text
+    except EgressPolicyError as exc:
+        LOGGER.warning("Apple product egress blocked: %s", exc)
+        return []
     except httpx.HTTPError as exc:
-        logger.warning("Apple product request failed: %s", exc)
+        LOGGER.warning("Apple product request failed: %s", exc)
         return []
 
     price = _extract_price(product_html)

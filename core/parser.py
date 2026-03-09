@@ -16,17 +16,18 @@ _RE_CHOSEN_SECTION = re.compile(
     r"chosen retailer",
     re.IGNORECASE,
 )
+_RE_RETAILER_HEADER = re.compile(r"^(amazon|best buy|bestbuy|apple)\b", re.IGNORECASE)
 
 _RE_WITHIN_BUDGET = re.compile(
     r"within budget\s*\(?\$?[0-9.]+\s*hard cap\)?\?\s*(yes|no)",
     re.IGNORECASE,
 )
 _RE_WITHIN_BUDGET_INLINE = re.compile(
-    r"within budget[^\\n]*(yes|no)",
+    r"within budget[^\n]*(yes|no)",
     re.IGNORECASE,
 )
 _RE_RETAILER_PRICE = re.compile(
-    r"(amazon|best buy|bestbuy|apple)[^\\n$]*\\$\\s*([0-9]+(?:\\.[0-9]{2})?)",
+    r"(amazon|best buy|bestbuy|apple)[^\n$]*\$\s*([0-9]+(?:\.[0-9]{2})?)",
     re.IGNORECASE,
 )
 
@@ -57,17 +58,21 @@ def parse_agent_output(raw_text: Optional[str]) -> ParsedAgentOutput:
 
     offers_by_retailer: dict[str, dict[str, Optional[str]]] = {}
     current_retailer: Optional[str] = None
+    in_chosen_section = False
 
     for line in lines:
-        lower = line.lower()
-        if "amazon" in lower:
-            current_retailer = "Amazon"
-        elif "best buy" in lower or "bestbuy" in lower:
-            current_retailer = "Best Buy"
-        elif "apple" in lower:
-            current_retailer = "Apple"
+        normalized = _strip_leading_index(_strip_markdown(line)).lower().rstrip(":")
+        if _RE_CHOSEN_SECTION.search(normalized):
+            in_chosen_section = True
+            current_retailer = None
+            continue
 
-        if current_retailer:
+        header = _extract_retailer_header(normalized)
+        if header:
+            current_retailer = header
+            in_chosen_section = False
+
+        if current_retailer and not in_chosen_section:
             offers_by_retailer.setdefault(current_retailer, {})
             _capture_line_fields(offers_by_retailer[current_retailer], line)
 
@@ -136,10 +141,13 @@ def _build_offer(retailer: str, fields: dict[str, Optional[str]]) -> ParsedOffer
 
 
 def _parse_chosen_offer(raw_text: str, lines: list[str]) -> Optional[ParsedOffer]:
+    by_lines = _parse_chosen_offer_by_lines(lines)
+    if by_lines is not None:
+        return by_lines
+
     match = _RE_CHOSEN.search(raw_text)
     if not match:
-        return _parse_chosen_offer_by_lines(lines)
-
+        return None
     text = match.group(1)
     url_match = _RE_URL.search(text)
     price_match = _RE_PRICE.search(text)
@@ -190,7 +198,7 @@ def _after_colon(line: str) -> str:
 def _parse_chosen_offer_by_lines(lines: list[str]) -> Optional[ParsedOffer]:
     for idx, line in enumerate(lines):
         normalized = _strip_leading_index(_strip_markdown(line)).lower().rstrip(":")
-        if _RE_CHOSEN_SECTION.search(normalized):
+        if normalized.startswith("chosen retailer"):
             return _parse_chosen_block(lines, idx)
     return None
 
@@ -273,4 +281,16 @@ def _strip_markdown(line: str) -> str:
 
 
 def _strip_leading_index(line: str) -> str:
-    return re.sub(r"^[\\d]+[\\).\\s:-]*", "", line).strip()
+    return re.sub(r"^[\d]+[\).\s:-]*", "", line).strip()
+
+
+def _extract_retailer_header(normalized: str) -> Optional[str]:
+    if not _RE_RETAILER_HEADER.search(normalized):
+        return None
+    # Restrict to actual section headers and avoid prose lines.
+    allowed_prefixes = ("amazon", "best buy", "bestbuy", "apple")
+    if not normalized.startswith(allowed_prefixes):
+        return None
+    if "price" in normalized or "seller" in normalized or "availability" in normalized:
+        return None
+    return _infer_retailer(normalized)

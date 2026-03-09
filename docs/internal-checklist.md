@@ -11,10 +11,13 @@ Do **not** skip steps. If any step fails, fix it before running an evaluation.
 3. Connector is running  
    Should log “Waiting for jobs…” and **not** only 204s forever.
 4. Required env vars set in the same shell as the API  
-   `BESTBUY_API_KEY` (and any others used in ground truth)
-5. UI inputs filled (no blanks)
+   `BESTBUY_API_KEY`, plus optional guardrails: `AGENTEVAL_DATAFORSEO_DAILY_CALL_CAP`, `AGENTEVAL_IP_MAX_JOBS_PER_WINDOW`
+5. Session token created and exported  
+   - `agenteval session --api-url http://localhost:8000`
+   - `export AGENTEVAL_SESSION_TOKEN="..."`
+6. UI inputs filled (no blanks)
    - AgentEval API URL
-   - Connector token
+   - Session token
    - OpenClaw agent id
    - Product name
    - Budget (USD)
@@ -45,4 +48,3 @@ Do **not** skip steps. If any step fails, fix it before running an evaluation.
 4. UI consistency
    - If price accuracy is “Not evaluated”, Commerce IQ must be `N/A`
    - No conflicting fields (e.g., N/A accuracy + non-null money left)
-

@@ -4,6 +4,7 @@ import time
 import random
 import io
 import sys
+import html
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -624,12 +625,54 @@ def _create_live_job(api_url: str, api_token: str, payload: dict) -> Optional[st
         return None
 
 
-def _poll_live_result(api_url: str, job_id: str, timeout_s: float = 600.0) -> tuple[Optional[dict], Optional[str], Optional[str], Optional[str]]:
+def _list_live_runs(api_url: str, api_token: str, limit: int = 20) -> list[dict]:
+    headers = {"Authorization": f"Bearer {api_token}"}
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(
+                f"{api_url.rstrip('/')}/v1/runs",
+                params={"limit": int(limit)},
+                headers=headers,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+    except httpx.HTTPError:
+        return []
+    return []
+
+
+def _submit_feedback(
+    api_url: str,
+    api_token: str,
+    run_id: str,
+    category: str,
+    message: str,
+) -> bool:
+    headers = {"Authorization": f"Bearer {api_token}"}
+    payload = {"run_id": run_id, "category": category, "message": message}
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(f"{api_url.rstrip('/')}/v1/feedback", json=payload, headers=headers)
+            resp.raise_for_status()
+            return True
+    except httpx.HTTPError:
+        return False
+
+
+def _poll_live_result(
+    api_url: str,
+    api_token: str,
+    job_id: str,
+    timeout_s: float = 600.0,
+) -> tuple[Optional[dict], Optional[str], Optional[str], Optional[str]]:
     start = time.time()
+    headers = {"Authorization": f"Bearer {api_token}"}
     while time.time() - start < timeout_s:
         try:
             with httpx.Client(timeout=8.0) as client:
-                resp = client.get(f"{api_url.rstrip('/')}/v1/runs/{job_id}")
+                resp = client.get(f"{api_url.rstrip('/')}/v1/runs/{job_id}", headers=headers)
                 if resp.status_code == 404:
                     time.sleep(1.0)
                     continue
@@ -674,6 +717,7 @@ def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_
             status_container.markdown("**Failed to create job.**")
             progress_bar.progress(1.0)
             return build_scores_from_eval(None), None, {}, None
+        st.session_state["last_run_id"] = job_id
 
         status_container.markdown("**Running live evaluation...**")
         progress_bar.progress(0.4)
@@ -683,7 +727,12 @@ def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_
                 poll_timeout = max(120.0, float(live_payload.get("timeout_s") or poll_timeout) + 60.0)
             except (TypeError, ValueError):
                 poll_timeout = 600.0
-        eval_result, raw_output, error, status = _poll_live_result(api_url, job_id, timeout_s=poll_timeout)
+        eval_result, raw_output, error, status = _poll_live_result(
+            api_url,
+            api_token,
+            job_id,
+            timeout_s=poll_timeout,
+        )
         progress_bar.progress(1.0)
         scores = build_scores_from_eval(eval_result)
         if raw_output:
@@ -1011,9 +1060,9 @@ def main():
                 help="Hosted API that the connector polls for jobs.",
             )
             api_token = st.text_input(
-                "Connector Token",
+                "Session Token",
                 type="password",
-                help="Matches AGENTEVAL_CONNECTOR_TOKEN on the API server.",
+                help="Session-scoped token used by Streamlit and connector.",
             )
             agent_id = st.text_input(
                 "OpenClaw Agent Id",
@@ -1189,6 +1238,9 @@ def main():
         st.session_state["demo_mode"] = demo_mode
         if demo_mode:
             st.session_state["case_raw_text"] = demo_case.agent_output.raw_text if demo_case else None
+        else:
+            st.session_state["live_api_url"] = api_url
+            st.session_state["live_api_token"] = api_token
         st.session_state["show_results"] = True
         time.sleep(0.5)
         st.rerun()
@@ -1203,6 +1255,9 @@ def show_results():
     acp_results = st.session_state.get("acp_results", {})
     eval_result = st.session_state.get("eval_result")
     demo_mode = st.session_state.get("demo_mode", False)
+    live_api_url = st.session_state.get("live_api_url")
+    live_api_token = st.session_state.get("live_api_token")
+    last_run_id = st.session_state.get("last_run_id")
 
     # Calculate overall score
     numeric_scores = [v for v in scores.values() if isinstance(v, (int, float))]
@@ -1319,6 +1374,8 @@ def show_results():
             chosen_url = _get_eval_field(eval_result, "agent_chosen_url")
             chosen_verified = _get_eval_field(eval_result, "agent_choice_verified")
             disputed_price = _get_eval_field(eval_result, "disputed_price")
+            evidence_status = _get_eval_field(eval_result, "evidence_status")
+            provider_status = _get_eval_field(eval_result, "provider_status") or []
             if chosen_retailer or chosen_price is not None:
                 chosen_label = f"{chosen_retailer or 'Unknown'}"
                 chosen_value = format_currency(chosen_price)
@@ -1338,6 +1395,32 @@ def show_results():
             else:
                 price_score_value = "Not evaluated"
 
+            best_retailer_safe = html.escape(best_retailer or "N/A")
+            best_source_safe = html.escape(best_source or "N/A")
+            chosen_label_safe = html.escape(chosen_label)
+            chosen_value_safe = html.escape(chosen_value)
+            confidence_safe = html.escape(format_confidence(best_conf))
+            best_price_safe = html.escape(format_currency(best_price))
+            money_left_safe = html.escape(format_currency(_get_eval_field(eval_result, "money_left_on_table_usd")))
+            price_score_safe = html.escape(price_score_value)
+            chosen_verification_safe = (
+                "Verified" if chosen_verified else "Unverified" if chosen_verified is False else "N/A"
+            )
+            within_budget_safe = html.escape(within_budget)
+            dispute_safe = "Yes" if disputed_price else "No" if disputed_price is False else "N/A"
+            evidence_status_safe = html.escape(evidence_status or ("degraded" if _get_eval_field(eval_result, "evidence_degraded") else "ok"))
+            provider_summary = "N/A"
+            if isinstance(provider_status, list) and provider_status:
+                parts = []
+                for item in provider_status:
+                    if isinstance(item, dict):
+                        provider = str(item.get("provider", "provider"))
+                        state = str(item.get("state", "unknown"))
+                        parts.append(f"{provider}:{state}")
+                if parts:
+                    provider_summary = ", ".join(parts)
+            provider_summary_safe = html.escape(provider_summary)
+
             st.markdown(
                 f"""
                 <div class="card">
@@ -1345,43 +1428,51 @@ def show_results():
                     <div class="metric-grid">
                             <div class="metric-item">
                                 <div class="metric-label">Best first-party price</div>
-                                <div class="metric-value">{format_currency(best_price)}</div>
+                                <div class="metric-value">{best_price_safe}</div>
                             </div>
                             <div class="metric-item">
                                 <div class="metric-label">Best price source</div>
-                                <div class="metric-value">{best_retailer or 'N/A'}</div>
+                                <div class="metric-value">{best_retailer_safe}</div>
                             </div>
                             <div class="metric-item">
                                 <div class="metric-label">Confidence</div>
-                                <div class="metric-value">{format_confidence(best_conf)}</div>
+                                <div class="metric-value">{confidence_safe}</div>
                             </div>
                             <div class="metric-item">
                                 <div class="metric-label">Evidence type</div>
-                                <div class="metric-value">{best_source or 'N/A'}</div>
+                                <div class="metric-value">{best_source_safe}</div>
                             </div>
                         <div class="metric-item">
                             <div class="metric-label">Agent choice</div>
-                            <div class="metric-value">{chosen_label} · {chosen_value}</div>
+                            <div class="metric-value">{chosen_label_safe} · {chosen_value_safe}</div>
                         </div>
                         <div class="metric-item">
                             <div class="metric-label">Agent choice verification</div>
-                            <div class="metric-value">{'Verified' if chosen_verified else 'Unverified' if chosen_verified is False else 'N/A'}</div>
+                            <div class="metric-value">{chosen_verification_safe}</div>
                         </div>
                         <div class="metric-item">
                             <div class="metric-label">Within budget</div>
-                            <div class="metric-value">{within_budget}</div>
+                            <div class="metric-value">{within_budget_safe}</div>
                         </div>
                             <div class="metric-item">
                                 <div class="metric-label">Money left on table</div>
-                                <div class="metric-value">{format_currency(_get_eval_field(eval_result, "money_left_on_table_usd"))}</div>
+                                <div class="metric-value">{money_left_safe}</div>
                             </div>
                         <div class="metric-item">
                             <div class="metric-label">Price accuracy</div>
-                            <div class="metric-value">{price_score_value}</div>
+                            <div class="metric-value">{price_score_safe}</div>
                         </div>
                         <div class="metric-item">
                             <div class="metric-label">Price dispute</div>
-                            <div class="metric-value">{'Yes' if disputed_price else 'No' if disputed_price is False else 'N/A'}</div>
+                            <div class="metric-value">{dispute_safe}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Evidence status</div>
+                            <div class="metric-value">{evidence_status_safe}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Providers</div>
+                            <div class="metric-value">{provider_summary_safe}</div>
                         </div>
                     </div>
                 </div>
@@ -1417,7 +1508,49 @@ def show_results():
     else:
         st.plotly_chart(radar_fig, use_container_width=True)
 
-    # Raw agent output moved next to Price Evaluation in demo mode
+    if not demo_mode and live_api_url and live_api_token:
+        st.markdown("**Run History**")
+        runs = _list_live_runs(live_api_url, live_api_token, limit=20)
+        if not runs:
+            st.info("No run history available for this session yet.")
+        else:
+            rows = []
+            for run in runs:
+                rows.append(
+                    {
+                        "Run ID": run.get("id"),
+                        "Status": run.get("status"),
+                        "Updated": run.get("updated_at"),
+                        "Error": run.get("error") or "",
+                    }
+                )
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+
+        st.markdown("**Send Feedback**")
+        feedback_category = st.selectbox(
+            "Feedback category",
+            options=["general", "bug", "accuracy", "ux", "feature-request"],
+            key="feedback_category",
+        )
+        feedback_message = st.text_area(
+            "What should we improve?",
+            key="feedback_message",
+            max_chars=2000,
+        )
+        feedback_disabled = not bool(last_run_id) or not feedback_message.strip()
+        if st.button("Submit Feedback", disabled=feedback_disabled):
+            ok = _submit_feedback(
+                live_api_url,
+                live_api_token,
+                run_id=last_run_id,
+                category=feedback_category,
+                message=feedback_message.strip(),
+            )
+            if ok:
+                st.success("Feedback submitted.")
+                st.session_state["feedback_message"] = ""
+            else:
+                st.error("Failed to submit feedback.")
 
 
 if __name__ == "__main__":

@@ -14,9 +14,12 @@ Status: Work in progress (early demo).
 2. Restart OpenClaw Gateway.
 3. Start AgentEval API:
    - `python3 -m uvicorn server.app:app --host 0.0.0.0 --port 8000 --reload`
-   - Set `AGENTEVAL_CONNECTOR_TOKEN` in your environment.
    - (Optional) Set `BESTBUY_API_KEY` for live price evidence.
-4. Start the connector:
+4. Create a session token:
+   - `agenteval session --api-url http://localhost:8000`
+   - Export the returned token:
+     - `export AGENTEVAL_SESSION_TOKEN=\"...\"`
+5. Start the connector:
    - Recommended first-time setup:
      - `agenteval init` (writes `~/.agenteval/config.json`)
      - `agenteval status` (verifies API + gateway)
@@ -49,7 +52,8 @@ Flags:
 Tokens are read from env vars (see below).
 
 ## Environment Variables
-- `AGENTEVAL_CONNECTOR_TOKEN` (required) — token shared between API and connector.
+- `AGENTEVAL_SESSION_TOKEN` (required) — session-scoped token for connector + UI/API access.
+- `AGENTEVAL_SESSION_BOOTSTRAP_TOKEN` (optional) — required only if API session bootstrap is protected.
 - `OPENCLAW_GATEWAY_TOKEN` (required) — OpenClaw Gateway token for chat completions.
 - `AGENTEVAL_API_URL` (optional) — overrides config.
 - `OPENCLAW_GATEWAY_URL` (optional) — overrides config.
@@ -58,3 +62,15 @@ Tokens are read from env vars (see below).
 - `AGENTEVAL_TIMEOUT` (optional) — overrides config.
 - `BESTBUY_API_KEY` (optional) — enables Best Buy price evidence.
 - `DATAFORSEO_LOGIN` / `DATAFORSEO_PASSWORD` (optional) — enables Amazon price evidence via DataForSEO.
+- `AGENTEVAL_DATAFORSEO_DAILY_CALL_CAP` (optional, default `200`) — max DataForSEO calls per UTC day before fetches are blocked.
+- `AGENTEVAL_EVIDENCE_KILL_SWITCH` (optional, default off) — hard-stop all paid evidence fetching.
+- `AGENTEVAL_IP_WINDOW_SECONDS` (optional, default `60`) — window size for IP job-create throttling.
+- `AGENTEVAL_IP_MAX_JOBS_PER_WINDOW` (optional, default `20`) — max job creates per IP per window.
+- `AGENTEVAL_MAX_PROMPT_BYTES` (optional, default `32768`) — prompt payload hard cap.
+- `AGENTEVAL_ALLOWED_ORIGINS` (optional, default `http://localhost:8501`) — comma-separated CORS allowlist.
+
+## Evidence Health
+Run results include provider health metadata:
+- `provider_status`: state per provider (`ok`, `disabled`, `blocked`, `unavailable`)
+- `evidence_status`: `degraded` when providers are unavailable/blocked and evidence is insufficient
+- `evidence_degraded`: boolean summary for UI rendering
