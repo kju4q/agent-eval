@@ -70,9 +70,13 @@ Tokens are read from env vars (see below).
 - `AGENTEVAL_IP_MAX_JOBS_PER_WINDOW` (optional, default `20`) — max job creates per IP per window.
 - `AGENTEVAL_MAX_PROMPT_BYTES` (optional, default `32768`) — prompt payload hard cap.
 - `AGENTEVAL_ALLOWED_ORIGINS` (optional, default `http://localhost:8501`) — comma-separated CORS allowlist.
+- `AGENTEVAL_PREFETCH_TIMEOUT_S` (optional, default `30`) — max seconds for background preview evidence prefetch.
+- `AGENTEVAL_REVALIDATE_FRESHNESS_SECONDS` (optional, default `60`) — skip completion-time revalidation when preview is fresher than this threshold.
 
 ## Evidence Health
 Run results include provider health metadata:
 - `provider_status`: state per provider (`ok`, `disabled`, `blocked`, `unavailable`)
 - `evidence_status`: `degraded` when providers are unavailable/blocked and evidence is insufficient
 - `evidence_degraded`: boolean summary for UI rendering
+- `preview_status`: preview evidence lifecycle (`pending`, `ready`, `failed`)
+- `revalidation_skipped_reason`: why completion-time selective revalidation was skipped

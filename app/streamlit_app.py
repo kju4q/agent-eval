@@ -7,7 +7,7 @@ import sys
 import html
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 import httpx
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -613,16 +613,28 @@ def _get_eval_field(eval_result, field: str):
     return getattr(eval_result, field, None)
 
 
-def _create_live_job(api_url: str, api_token: str, payload: dict) -> Optional[str]:
+def _create_live_job(api_url: str, api_token: str, payload: dict) -> tuple[Optional[str], Optional[str]]:
     headers = {"Authorization": f"Bearer {api_token}"}
     try:
         with httpx.Client(timeout=12.0) as client:
             resp = client.post(f"{api_url.rstrip('/')}/v1/jobs", json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-            return data.get("id")
-    except httpx.HTTPError:
-        return None
+            return data.get("id"), None
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else "unknown"
+        body = ""
+        try:
+            if exc.response is not None:
+                body = (exc.response.text or "").strip()
+        except Exception:
+            body = ""
+        detail = f"Job creation failed ({status})"
+        if body:
+            detail = f"{detail}: {body[:300]}"
+        return None, detail
+    except (httpx.HTTPError, ValueError) as exc:
+        return None, f"Job creation failed: {exc}"
 
 
 def _list_live_runs(api_url: str, api_token: str, limit: int = 20) -> list[dict]:
@@ -638,7 +650,7 @@ def _list_live_runs(api_url: str, api_token: str, limit: int = 20) -> list[dict]
             data = resp.json()
             if isinstance(data, list):
                 return data
-    except httpx.HTTPError:
+    except (httpx.HTTPError, ValueError):
         return []
     return []
 
@@ -666,27 +678,35 @@ def _poll_live_result(
     api_token: str,
     job_id: str,
     timeout_s: float = 600.0,
-) -> tuple[Optional[dict], Optional[str], Optional[str], Optional[str]]:
+    on_tick: Optional[Callable[[float, str, Optional[dict]], None]] = None,
+) -> tuple[Optional[dict], Optional[str], Optional[str], Optional[str], Optional[dict]]:
     start = time.time()
     headers = {"Authorization": f"Bearer {api_token}"}
     while time.time() - start < timeout_s:
+        elapsed = time.time() - start
         try:
             with httpx.Client(timeout=8.0) as client:
                 resp = client.get(f"{api_url.rstrip('/')}/v1/runs/{job_id}", headers=headers)
                 if resp.status_code == 404:
+                    if on_tick:
+                        on_tick(elapsed, "queued", None)
                     time.sleep(1.0)
                     continue
                 resp.raise_for_status()
                 data = resp.json()
-        except httpx.HTTPError:
+        except (httpx.HTTPError, ValueError):
+            if on_tick:
+                on_tick(elapsed, "polling", None)
             time.sleep(1.0)
             continue
 
-        status = data.get("status")
+        status = str(data.get("status") or "running")
+        if on_tick:
+            on_tick(elapsed, status, data if isinstance(data, dict) else None)
         if status in {"completed", "failed"}:
-            return data.get("eval_result"), data.get("raw_output"), data.get("error"), status
+            return data.get("eval_result"), data.get("raw_output"), data.get("error"), status, data
         time.sleep(1.0)
-    return None, None, None, None
+    return None, None, None, None, None
 
 
 def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_payload=None, api_url=None, api_token=None):
@@ -708,30 +728,55 @@ def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_
         scores = build_scores_from_eval(eval_result)
         progress_bar.progress(1.0)
         time.sleep(0.6)
-        return scores, None, {}, eval_result
+        return scores, None, {}, eval_result, None
     if live_payload and api_url and api_token:
         status_container.markdown("**Creating live job...**")
         progress_bar.progress(0.1)
-        job_id = _create_live_job(api_url, api_token, live_payload)
+        job_id, job_error = _create_live_job(api_url, api_token, live_payload)
         if not job_id:
             status_container.markdown("**Failed to create job.**")
             progress_bar.progress(1.0)
-            return build_scores_from_eval(None), None, {}, None
+            return build_scores_from_eval(None), None, {}, None, (job_error or "Failed to create job.")
         st.session_state["last_run_id"] = job_id
 
         status_container.markdown("**Running live evaluation...**")
         progress_bar.progress(0.4)
-        poll_timeout = 600.0
+        poll_timeout = 240.0
         if live_payload:
             try:
-                poll_timeout = max(120.0, float(live_payload.get("timeout_s") or poll_timeout) + 60.0)
+                poll_timeout = max(30.0, float(live_payload.get("timeout_s") or poll_timeout))
             except (TypeError, ValueError):
-                poll_timeout = 600.0
-        eval_result, raw_output, error, status = _poll_live_result(
+                poll_timeout = 240.0
+        detail_container.markdown(
+            "Agent browsing in live mode. Typical completion is 2-5 minutes for web tasks."
+        )
+
+        def _tick(elapsed_s: float, run_state: str, run_data: Optional[dict]) -> None:
+            clipped = min(0.95, 0.4 + (elapsed_s / max(poll_timeout, 1.0)) * 0.5)
+            progress_bar.progress(clipped)
+            state_label = {
+                "queued": "Queued",
+                "running": "Running",
+                "completed": "Completed",
+                "failed": "Failed",
+            }.get(run_state, "Running")
+            status_container.markdown(f"**Running live evaluation... ({state_label})**")
+            preview_label = ""
+            if isinstance(run_data, dict):
+                preview_status = run_data.get("preview_status")
+                if preview_status:
+                    preview_label = f" • Preview: {preview_status}"
+            detail_container.markdown(
+                f"State: **{state_label}** • Elapsed: **{int(elapsed_s)}s**{preview_label}. "
+                "Live tasks can take several minutes."
+            )
+
+        eval_result, raw_output, error, status, run_data = _poll_live_result(
             api_url,
             api_token,
             job_id,
             timeout_s=poll_timeout,
+            on_tick=_tick,
         )
         progress_bar.progress(1.0)
         scores = build_scores_from_eval(eval_result)
@@ -739,12 +784,24 @@ def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_
             st.session_state["case_raw_text"] = raw_output
         elif error:
             st.session_state["case_raw_text"] = f"[error] {error}"
-        return scores, None, {}, eval_result
+        if run_data:
+            st.session_state["last_run_payload"] = run_data
+        if status is None:
+            return (
+                scores,
+                None,
+                {},
+                eval_result,
+                f"Agent timed out after {int(poll_timeout)}s. Try again or increase timeout.",
+            )
+        if status == "failed":
+            return scores, None, {}, eval_result, (error or "Live run failed.")
+        return scores, None, {}, eval_result, None
 
     status_container.markdown("Live agent evaluation is not configured.")
     detail_container.markdown("Set an AgentEval API URL to run live jobs.")
     progress_bar.progress(1.0)
-    return build_scores_from_eval(None), None, {}, None
+    return build_scores_from_eval(None), None, {}, None, "Live mode is not configured."
 
     current_step = 0
     x402_response = None
@@ -1024,6 +1081,10 @@ def main():
     # Main content
     st.markdown("### Evaluate Your Commerce Agent")
     st.markdown("Test your agent's price accuracy before deployment.")
+    run_error = st.session_state.get("run_error")
+    if run_error:
+        st.error(run_error)
+        st.session_state["run_error"] = None
 
     # Input form
     col1, col2 = st.columns([2, 1])
@@ -1084,9 +1145,14 @@ def main():
             timeout_s = st.number_input(
                 "OpenClaw timeout (seconds)",
                 min_value=30.0,
-                value=600.0,
+                value=240.0,
                 step=30.0,
                 help="Increase this for large prompts or slow browsing tasks.",
+            )
+            fast_mode = st.checkbox(
+                "Fast mode (180s max)",
+                value=False,
+                help="Caps timeout to 180 seconds for quicker feedback.",
             )
             st.markdown("**Rules**")
             allow_third_party = st.checkbox("Allow third-party sellers", value=False)
@@ -1109,6 +1175,8 @@ def main():
                 "source": "openclaw",
                 "timeout_s": timeout_s,
             }
+            if fast_mode:
+                live_payload["timeout_s"] = min(float(timeout_s), 180.0)
             st.caption("Connector must be running and polling this AgentEval API.")
 
         st.markdown("<br>", unsafe_allow_html=True)
@@ -1215,7 +1283,7 @@ def main():
             unsafe_allow_html=True,
         )
         with st.spinner("Running evaluation..."):
-            scores, x402_response, acp_results, eval_result = run_evaluation(
+            scores, x402_response, acp_results, eval_result, run_error = run_evaluation(
                 agent_input,
                 selected_tests,
                 acp_mode,
@@ -1228,7 +1296,13 @@ def main():
 
         st.markdown('</div>', unsafe_allow_html=True)
 
+        if run_error:
+            st.session_state["run_error"] = run_error
+            st.error(run_error)
+            return
+
         # Store results and rerun
+        st.session_state["run_error"] = None
         st.session_state["scores"] = scores
         st.session_state["agent_input"] = agent_input
         st.session_state["acp_mode"] = acp_mode
@@ -1258,6 +1332,7 @@ def show_results():
     live_api_url = st.session_state.get("live_api_url")
     live_api_token = st.session_state.get("live_api_token")
     last_run_id = st.session_state.get("last_run_id")
+    run_payload = st.session_state.get("last_run_payload") or {}
 
     # Calculate overall score
     numeric_scores = [v for v in scores.values() if isinstance(v, (int, float))]
@@ -1373,9 +1448,14 @@ def show_results():
             chosen_price = _get_eval_field(eval_result, "agent_chosen_price_usd")
             chosen_url = _get_eval_field(eval_result, "agent_chosen_url")
             chosen_verified = _get_eval_field(eval_result, "agent_choice_verified")
+            verification_failure_reason = _get_eval_field(eval_result, "verification_failure_reason")
             disputed_price = _get_eval_field(eval_result, "disputed_price")
             evidence_status = _get_eval_field(eval_result, "evidence_status")
             provider_status = _get_eval_field(eval_result, "provider_status") or []
+            preview_status = run_payload.get("preview_status")
+            preview_at = run_payload.get("preview_at")
+            revalidated_at = run_payload.get("revalidated_at")
+            revalidation_skipped_reason = run_payload.get("revalidation_skipped_reason")
             if chosen_retailer or chosen_price is not None:
                 chosen_label = f"{chosen_retailer or 'Unknown'}"
                 chosen_value = format_currency(chosen_price)
@@ -1406,6 +1486,7 @@ def show_results():
             chosen_verification_safe = (
                 "Verified" if chosen_verified else "Unverified" if chosen_verified is False else "N/A"
             )
+            verification_reason_safe = html.escape(verification_failure_reason or "N/A")
             within_budget_safe = html.escape(within_budget)
             dispute_safe = "Yes" if disputed_price else "No" if disputed_price is False else "N/A"
             evidence_status_safe = html.escape(evidence_status or ("degraded" if _get_eval_field(eval_result, "evidence_degraded") else "ok"))
@@ -1420,6 +1501,10 @@ def show_results():
                 if parts:
                     provider_summary = ", ".join(parts)
             provider_summary_safe = html.escape(provider_summary)
+            preview_state_safe = html.escape(preview_status or "N/A")
+            preview_at_safe = html.escape(preview_at or "N/A")
+            revalidated_at_safe = html.escape(revalidated_at or "N/A")
+            revalidation_skip_safe = html.escape(revalidation_skipped_reason or "None")
 
             st.markdown(
                 f"""
@@ -1451,6 +1536,10 @@ def show_results():
                             <div class="metric-value">{chosen_verification_safe}</div>
                         </div>
                         <div class="metric-item">
+                            <div class="metric-label">Verification reason</div>
+                            <div class="metric-value">{verification_reason_safe}</div>
+                        </div>
+                        <div class="metric-item">
                             <div class="metric-label">Within budget</div>
                             <div class="metric-value">{within_budget_safe}</div>
                         </div>
@@ -1473,6 +1562,22 @@ def show_results():
                         <div class="metric-item">
                             <div class="metric-label">Providers</div>
                             <div class="metric-value">{provider_summary_safe}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Preview status</div>
+                            <div class="metric-value">{preview_state_safe}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Preview at</div>
+                            <div class="metric-value">{preview_at_safe}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Revalidated at</div>
+                            <div class="metric-value">{revalidated_at_safe}</div>
+                        </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Revalidation skipped</div>
+                            <div class="metric-value">{revalidation_skip_safe}</div>
                         </div>
                     </div>
                 </div>
@@ -1520,6 +1625,10 @@ def show_results():
                     {
                         "Run ID": run.get("id"),
                         "Status": run.get("status"),
+                        "Preview": run.get("preview_status") or "",
+                        "Started": run.get("started_at") or "",
+                        "Completed": run.get("completed_at") or "",
+                        "Duration (s)": run.get("duration_s") or "",
                         "Updated": run.get("updated_at"),
                         "Error": run.get("error") or "",
                     }

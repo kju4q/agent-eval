@@ -67,6 +67,18 @@ class RunResultPayload(BaseModel):
     raw_output: Optional[str]
     status: str
     error: Optional[str]
+    preview_status: Optional[str] = None
+    preview_error: Optional[str] = None
+    preview_at: Optional[str] = None
+    evidence_preview: Optional[list[dict]] = None
+    provider_status_preview: Optional[list[dict]] = None
+    final_evidence: Optional[list[dict]] = None
+    final_provider_status: Optional[list[dict]] = None
+    revalidated_at: Optional[str] = None
+    revalidation_skipped_reason: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    duration_s: Optional[float] = None
 
 
 class RunSummaryPayload(BaseModel):
@@ -75,6 +87,11 @@ class RunSummaryPayload(BaseModel):
     created_at: str
     updated_at: str
     error: Optional[str]
+    preview_status: Optional[str] = None
+    preview_at: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    duration_s: Optional[float] = None
 
 
 class FeedbackCreatePayload(BaseModel):

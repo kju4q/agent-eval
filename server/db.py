@@ -28,6 +28,18 @@ class JobRecord:
     created_at: str
     updated_at: str
     error: Optional[str]
+    preview_status: Optional[str]
+    preview_error: Optional[str]
+    preview_at: Optional[str]
+    evidence_preview: Optional[list[dict[str, Any]]]
+    provider_status_preview: Optional[list[dict[str, Any]]]
+    final_evidence: Optional[list[dict[str, Any]]]
+    final_provider_status: Optional[list[dict[str, Any]]]
+    revalidated_at: Optional[str]
+    revalidation_skipped_reason: Optional[str]
+    started_at: Optional[str]
+    completed_at: Optional[str]
+    duration_s: Optional[float]
 
 
 @dataclass
@@ -76,7 +88,19 @@ class JobStore:
                     eval_result TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    error TEXT
+                    error TEXT,
+                    preview_status TEXT,
+                    preview_error TEXT,
+                    preview_at TEXT,
+                    evidence_preview TEXT,
+                    provider_status_preview TEXT,
+                    final_evidence TEXT,
+                    final_provider_status TEXT,
+                    revalidated_at TEXT,
+                    revalidation_skipped_reason TEXT,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    duration_s REAL
                 )
                 """
             )
@@ -139,8 +163,24 @@ class JobStore:
             )
 
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
-            if "session_id" not in columns:
-                conn.execute("ALTER TABLE jobs ADD COLUMN session_id TEXT")
+            required_columns = {
+                "session_id": "TEXT",
+                "preview_status": "TEXT",
+                "preview_error": "TEXT",
+                "preview_at": "TEXT",
+                "evidence_preview": "TEXT",
+                "provider_status_preview": "TEXT",
+                "final_evidence": "TEXT",
+                "final_provider_status": "TEXT",
+                "revalidated_at": "TEXT",
+                "revalidation_skipped_reason": "TEXT",
+                "started_at": "TEXT",
+                "completed_at": "TEXT",
+                "duration_s": "REAL",
+            }
+            for name, dtype in required_columns.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {dtype}")
 
     def create_session(self, *, ttl_seconds: int, max_evals: int) -> tuple[SessionRecord, str]:
         session_id = secrets.token_hex(16)
@@ -205,10 +245,11 @@ class JobStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO jobs (id, session_id, status, payload, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO jobs (
+                    id, session_id, status, payload, created_at, updated_at, preview_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (job_id, session_id, "queued", json.dumps(payload), now, now),
+                (job_id, session_id, "queued", json.dumps(payload), now, now, "pending"),
             )
         return self.get_job(job_id, session_id=session_id)
 
@@ -240,8 +281,8 @@ class JobStore:
             if row is None:
                 return None
             conn.execute(
-                "UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
-                ("running", _utc_now(), row["id"]),
+                "UPDATE jobs SET status = ?, updated_at = ?, started_at = COALESCE(started_at, ?) WHERE id = ?",
+                ("running", _utc_now(), _utc_now(), row["id"]),
             )
         return self.get_job(row["id"], session_id=session_id)
 
@@ -249,20 +290,22 @@ class JobStore:
         now = datetime.now(timezone.utc)
         updated_rows = 0
         with self._connect() as conn:
-            rows = conn.execute("SELECT id, payload, updated_at FROM jobs WHERE status = 'running'").fetchall()
+            rows = conn.execute("SELECT id, payload, updated_at, started_at FROM jobs WHERE status = 'running'").fetchall()
             for row in rows:
                 payload = json.loads(row["payload"])
                 timeout_s = _parse_timeout(payload.get("timeout_s"))
                 max_age_s = max(900.0, timeout_s + 120.0)
                 updated_at = _parse_iso(row["updated_at"])
                 if (now - updated_at).total_seconds() > max_age_s:
+                    finished_at = _utc_now()
+                    started_at = row["started_at"] or row["updated_at"]
                     conn.execute(
                         """
                         UPDATE jobs
-                        SET status = ?, updated_at = ?, error = ?
+                        SET status = ?, updated_at = ?, error = ?, completed_at = ?, duration_s = ?
                         WHERE id = ?
                         """,
-                        ("failed", _utc_now(), "stale-running-timeout", row["id"]),
+                        ("failed", finished_at, "stale-running-timeout", finished_at, _compute_duration_s(started_at, finished_at), row["id"]),
                     )
                     updated_rows += 1
         return updated_rows
@@ -273,27 +316,82 @@ class JobStore:
         session_id: str,
         raw_output: str,
         eval_result: Optional[dict[str, Any]],
+        final_evidence: Optional[list[dict[str, Any]]] = None,
+        final_provider_status: Optional[list[dict[str, Any]]] = None,
+        revalidated_at: Optional[str] = None,
+        revalidation_skipped_reason: Optional[str] = None,
         error: Optional[str] = None,
     ) -> JobRecord:
         status = "completed" if error is None else "failed"
+        now = _utc_now()
+        current = self.get_job(job_id, session_id=session_id)
+        duration_s = _compute_duration_s(current.started_at, now)
         with self._connect() as conn:
             conn.execute(
                 """
                 UPDATE jobs
-                SET status = ?, raw_output = ?, eval_result = ?, updated_at = ?, error = ?
+                SET status = ?, raw_output = ?, eval_result = ?, updated_at = ?, error = ?,
+                    final_evidence = ?, final_provider_status = ?, revalidated_at = ?,
+                    revalidation_skipped_reason = ?, completed_at = ?, duration_s = ?
                 WHERE id = ? AND session_id = ?
                 """,
                 (
                     status,
                     raw_output,
                     json.dumps(eval_result) if eval_result else None,
-                    _utc_now(),
+                    now,
                     error,
+                    json.dumps(final_evidence) if final_evidence is not None else (json.dumps(current.final_evidence) if current.final_evidence is not None else None),
+                    json.dumps(final_provider_status) if final_provider_status is not None else (json.dumps(current.final_provider_status) if current.final_provider_status is not None else None),
+                    revalidated_at,
+                    revalidation_skipped_reason,
+                    now,
+                    duration_s,
                     job_id,
                     session_id,
                 ),
             )
         return self.get_job(job_id, session_id=session_id)
+
+    def set_job_preview(
+        self,
+        job_id: str,
+        session_id: str,
+        *,
+        preview_status: str,
+        preview_error: Optional[str],
+        preview_at: Optional[str],
+        evidence_preview: Optional[list[dict[str, Any]]],
+        provider_status_preview: Optional[list[dict[str, Any]]],
+    ) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM jobs WHERE id = ? AND session_id = ?",
+                (job_id, session_id),
+            ).fetchone()
+            if row is None:
+                return False
+            if row["status"] in {"completed", "failed"}:
+                return False
+            conn.execute(
+                """
+                UPDATE jobs
+                SET preview_status = ?, preview_error = ?, preview_at = ?,
+                    evidence_preview = ?, provider_status_preview = ?, updated_at = ?
+                WHERE id = ? AND session_id = ?
+                """,
+                (
+                    preview_status,
+                    preview_error,
+                    preview_at,
+                    json.dumps(evidence_preview) if evidence_preview is not None else None,
+                    json.dumps(provider_status_preview) if provider_status_preview is not None else None,
+                    _utc_now(),
+                    job_id,
+                    session_id,
+                ),
+            )
+        return True
 
     def list_runs_for_session(self, session_id: str, limit: int = 50) -> list[JobRecord]:
         with self._connect() as conn:
@@ -480,6 +578,18 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         error=row["error"],
+        preview_status=row["preview_status"] if "preview_status" in keys else None,
+        preview_error=row["preview_error"] if "preview_error" in keys else None,
+        preview_at=row["preview_at"] if "preview_at" in keys else None,
+        evidence_preview=json.loads(row["evidence_preview"]) if "evidence_preview" in keys and row["evidence_preview"] else None,
+        provider_status_preview=json.loads(row["provider_status_preview"]) if "provider_status_preview" in keys and row["provider_status_preview"] else None,
+        final_evidence=json.loads(row["final_evidence"]) if "final_evidence" in keys and row["final_evidence"] else None,
+        final_provider_status=json.loads(row["final_provider_status"]) if "final_provider_status" in keys and row["final_provider_status"] else None,
+        revalidated_at=row["revalidated_at"] if "revalidated_at" in keys else None,
+        revalidation_skipped_reason=row["revalidation_skipped_reason"] if "revalidation_skipped_reason" in keys else None,
+        started_at=row["started_at"] if "started_at" in keys else None,
+        completed_at=row["completed_at"] if "completed_at" in keys else None,
+        duration_s=float(row["duration_s"]) if "duration_s" in keys and row["duration_s"] is not None else None,
     )
 
 
@@ -529,3 +639,15 @@ def _future_iso(seconds: int) -> str:
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _compute_duration_s(started_at: Optional[str], finished_at: str) -> Optional[float]:
+    if not started_at:
+        return None
+    try:
+        start_dt = _parse_iso(started_at)
+        end_dt = _parse_iso(finished_at)
+    except Exception:
+        return None
+    delta = (end_dt - start_dt).total_seconds()
+    return round(delta, 3) if delta >= 0 else None

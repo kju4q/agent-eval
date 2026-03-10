@@ -21,6 +21,7 @@ class EvaluationResult:
     agent_chosen_url: Optional[str]
     agent_choice_qualified: Optional[bool]
     agent_choice_verified: Optional[bool]
+    verification_failure_reason: Optional[str]
     found_best_first_party_price: Optional[bool]
     within_budget: Optional[bool]
     money_left_on_table_usd: Optional[float]
@@ -42,7 +43,7 @@ def evaluate_case_study(case_study: CaseStudy) -> EvaluationResult:
         best_item = min(qualifying_with_price, key=lambda item: item.price_usd or float("inf"))
 
     chosen_offer = parsed.chosen
-    chosen_evidence = _match_offer_to_evidence(chosen_offer, case_study.evidence)
+    chosen_evidence, verification_reason = _match_offer_to_evidence(chosen_offer, case_study.evidence)
 
     agent_chosen_price = None
     agent_chosen_retailer = None
@@ -62,6 +63,11 @@ def evaluate_case_study(case_study: CaseStudy) -> EvaluationResult:
     agent_choice_verified = None
     if chosen_offer:
         agent_choice_verified = chosen_evidence is not None
+    verification_failure_reason = None
+    if chosen_offer and chosen_evidence is None:
+        verification_failure_reason = (
+            verification_reason or "No evidence item matched the agent's chosen offer."
+        )
 
     found_best = None
     if best_item and agent_chosen_price is not None:
@@ -110,6 +116,7 @@ def evaluate_case_study(case_study: CaseStudy) -> EvaluationResult:
         agent_chosen_url=agent_chosen_url,
         agent_choice_qualified=agent_choice_qualified,
         agent_choice_verified=agent_choice_verified,
+        verification_failure_reason=verification_failure_reason,
         found_best_first_party_price=found_best,
         within_budget=within_budget,
         money_left_on_table_usd=money_left,
@@ -163,15 +170,15 @@ def _prices_equal(left: Optional[float], right: Optional[float]) -> bool:
 def _match_offer_to_evidence(
     offer: Optional[ParsedOffer],
     evidence: list[EvidenceItem],
-) -> Optional[EvidenceItem]:
+) -> tuple[Optional[EvidenceItem], Optional[str]]:
     if offer is None:
-        return None
+        return None, None
     if not evidence:
-        return None
+        return None, "No evidence was available to verify the chosen offer."
     if offer.url:
         for item in evidence:
             if item.url == offer.url:
-                return item
+                return item, "Matched exact URL to evidence."
     offer_listing_id = offer.listing_id
     offer_listing_id_type = offer.listing_id_type
     if not offer_listing_id and offer.url:
@@ -190,7 +197,7 @@ def _match_offer_to_evidence(
             if typed:
                 candidates = typed
         if candidates:
-            return max(candidates, key=_confidence_key)
+            return max(candidates, key=_confidence_key), "Matched listing ID to evidence."
     if offer.retailer and offer.price_usd is not None:
         matches = [
             item
@@ -198,12 +205,18 @@ def _match_offer_to_evidence(
             if item.retailer == offer.retailer and _prices_equal(item.price_usd, offer.price_usd)
         ]
         if len(matches) == 1:
-            return max(matches, key=_confidence_key)
+            return max(matches, key=_confidence_key), "Matched retailer and price to evidence."
+        if len(matches) > 1:
+            return None, "Multiple evidence entries matched retailer and price; could not verify uniquely."
     if offer.retailer and offer.url is None and offer_listing_id is None and offer.price_usd is None:
         matches = [item for item in evidence if item.retailer == offer.retailer]
         if len(matches) == 1:
-            return matches[0]
-    return None
+            return matches[0], "Matched by retailer only (single evidence entry)."
+    if offer.url or offer_listing_id:
+        return None, "Chosen URL/listing ID did not match evidence."
+    if offer.retailer and offer.price_usd is not None:
+        return None, "No evidence entry matched chosen retailer and price."
+    return None, "Chosen offer lacked enough identifiers to verify."
 
 
 def _filter_by_confidence(evidence: list[EvidenceItem]) -> list[EvidenceItem]:

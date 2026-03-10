@@ -6,17 +6,22 @@ import logging
 import os
 import secrets
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+import anyio
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from core.parser import parse_agent_output
+from core.schema import EvidenceItem
 from core.evaluator import EvaluationResult
 from server.db import JobStore, SessionRecord
 from server.evaluate import evaluate_live_run
 from server.ground_truth import fetch_evidence_with_status
+from server.ground_truth.types import GroundTruthResult
 from server.models import (
     CompleteJobPayload,
     CreateJobPayload,
@@ -153,6 +158,7 @@ def session_status(session: SessionRecord = Depends(_require_active_session)) ->
 @app.post("/v1/jobs", response_model=JobResponse)
 def create_job(
     payload: CreateJobPayload,
+    background_tasks: BackgroundTasks,
     session: SessionRecord = Depends(_require_active_session),
     request: Request = None,
     x_forwarded_for: Optional[str] = Header(default=None),
@@ -174,7 +180,9 @@ def create_job(
         raise HTTPException(status_code=429, detail="Session eval quota exceeded or session expired.")
 
     job_id = str(uuid.uuid4())
-    record = store.create_job(job_id, session.id, payload.model_dump())
+    payload_dict = payload.model_dump()
+    record = store.create_job(job_id, session.id, payload_dict)
+    background_tasks.add_task(_run_prefetch_task, job_id, session.id, payload_dict)
     return JobResponse(
         id=record.id,
         status=record.status,
@@ -203,41 +211,38 @@ def complete_job(
         raise HTTPException(status_code=404, detail="Job not found.")
 
     if record.status in {"completed", "failed"}:
-        return RunResultPayload(
-            eval_result=record.eval_result,
-            raw_output=record.raw_output,
-            status=record.status,
-            error=record.error,
-        )
+        return _to_run_result_payload(record)
     if record.status != "running":
         raise HTTPException(status_code=409, detail=f"Job is in invalid state: {record.status}")
 
-    ground_truth = fetch_evidence_with_status(record.payload)
+    final_ground_truth, revalidated_at, revalidation_skipped_reason = _build_final_ground_truth(
+        record=record,
+        raw_output=payload.raw_output,
+    )
     eval_result, status = evaluate_live_run(
         job_id=job_id,
         payload=record.payload,
         raw_output=payload.raw_output,
-        evidence=ground_truth.evidence,
+        evidence=final_ground_truth.evidence,
     )
     eval_payload = _serialize_eval_result(eval_result, status)
-    eval_payload["evidence_degraded"] = ground_truth.degraded
-    eval_payload["provider_status"] = [item.as_dict() for item in ground_truth.provider_status]
+    eval_payload["evidence_degraded"] = final_ground_truth.degraded
+    eval_payload["provider_status"] = [item.as_dict() for item in final_ground_truth.provider_status]
     if status == "insufficient-evidence":
-        eval_payload["evidence_status"] = "degraded" if ground_truth.degraded else "insufficient"
+        eval_payload["evidence_status"] = "degraded" if final_ground_truth.degraded else "insufficient"
     stored = store.complete_job(
         job_id,
         session.id,
         raw_output=payload.raw_output,
         eval_result=eval_payload,
+        final_evidence=[_evidence_to_dict(item) for item in final_ground_truth.evidence],
+        final_provider_status=[item.as_dict() for item in final_ground_truth.provider_status],
+        revalidated_at=revalidated_at,
+        revalidation_skipped_reason=revalidation_skipped_reason,
         error=payload.error,
     )
 
-    return RunResultPayload(
-        eval_result=stored.eval_result,
-        raw_output=stored.raw_output,
-        status=stored.status,
-        error=stored.error,
-    )
+    return _to_run_result_payload(stored)
 
 
 @app.get("/v1/runs", response_model=list[RunSummaryPayload])
@@ -253,6 +258,11 @@ def list_runs(
             created_at=record.created_at,
             updated_at=record.updated_at,
             error=record.error,
+            preview_status=record.preview_status,
+            preview_at=record.preview_at,
+            started_at=record.started_at,
+            completed_at=record.completed_at,
+            duration_s=record.duration_s,
         )
         for record in records
     ]
@@ -267,12 +277,7 @@ def get_run(
         record = store.get_job(job_id, session_id=session.id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Job not found.")
-    return RunResultPayload(
-        eval_result=record.eval_result,
-        raw_output=record.raw_output,
-        status=record.status,
-        error=record.error,
-    )
+    return _to_run_result_payload(record)
 
 
 @app.post("/v1/feedback", response_model=FeedbackResponse)
@@ -325,8 +330,210 @@ def _serialize_eval_result(
         "agent_chosen_url": eval_result.agent_chosen_url,
         "agent_choice_qualified": eval_result.agent_choice_qualified,
         "agent_choice_verified": eval_result.agent_choice_verified,
+        "verification_failure_reason": eval_result.verification_failure_reason,
         "found_best_first_party_price": eval_result.found_best_first_party_price,
         "within_budget": eval_result.within_budget,
         "money_left_on_table_usd": eval_result.money_left_on_table_usd,
         "disputed_price": eval_result.disputed_price,
     }
+
+
+def _to_run_result_payload(record) -> RunResultPayload:
+    return RunResultPayload(
+        eval_result=record.eval_result,
+        raw_output=record.raw_output,
+        status=record.status,
+        error=record.error,
+        preview_status=record.preview_status,
+        preview_error=record.preview_error,
+        preview_at=record.preview_at,
+        evidence_preview=record.evidence_preview,
+        provider_status_preview=record.provider_status_preview,
+        final_evidence=record.final_evidence,
+        final_provider_status=record.final_provider_status,
+        revalidated_at=record.revalidated_at,
+        revalidation_skipped_reason=record.revalidation_skipped_reason,
+        started_at=record.started_at,
+        completed_at=record.completed_at,
+        duration_s=record.duration_s,
+    )
+
+
+async def _run_prefetch_task(job_id: str, session_id: str, payload: dict) -> None:
+    timeout_s = int(os.getenv("AGENTEVAL_PREFETCH_TIMEOUT_S", "30"))
+    try:
+        with anyio.fail_after(timeout_s):
+            ground_truth = await anyio.to_thread.run_sync(fetch_evidence_with_status, payload)
+    except TimeoutError:
+        store.set_job_preview(
+            job_id,
+            session_id,
+            preview_status="failed",
+            preview_error="prefetch timed out",
+            preview_at=None,
+            evidence_preview=None,
+            provider_status_preview=None,
+        )
+        return
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Preview prefetch failed for job %s: %s", job_id, exc)
+        store.set_job_preview(
+            job_id,
+            session_id,
+            preview_status="failed",
+            preview_error=f"prefetch failed: {exc.__class__.__name__}",
+            preview_at=None,
+            evidence_preview=None,
+            provider_status_preview=None,
+        )
+        return
+
+    preview_at = datetime.now(timezone.utc).isoformat()
+    store.set_job_preview(
+        job_id,
+        session_id,
+        preview_status="ready",
+        preview_error=None,
+        preview_at=preview_at,
+        evidence_preview=[_evidence_to_dict(item) for item in ground_truth.evidence],
+        provider_status_preview=[item.as_dict() for item in ground_truth.provider_status],
+    )
+
+
+def _build_final_ground_truth(record, raw_output: str) -> tuple[GroundTruthResult, Optional[str], Optional[str]]:
+    preview_result = _preview_ground_truth(record)
+    chosen_retailer = _extract_chosen_retailer(raw_output)
+    if not chosen_retailer:
+        if _has_ground_truth_data(preview_result):
+            return preview_result, None, "final_revalidation_skipped_no_clear_choice"
+        return fetch_evidence_with_status(record.payload), None, "final_revalidation_skipped_no_clear_choice"
+
+    freshness_s = int(os.getenv("AGENTEVAL_REVALIDATE_FRESHNESS_SECONDS", "60"))
+    if _is_preview_fresh(record.preview_at, freshness_s):
+        if _has_ground_truth_data(preview_result):
+            return preview_result, None, "final_revalidation_skipped_fresh_preview"
+        return fetch_evidence_with_status(record.payload), None, "final_revalidation_skipped_fresh_preview"
+
+    provider_state = _provider_state_for_retailer(record.provider_status_preview or [], chosen_retailer)
+    if provider_state == "disabled":
+        if _has_ground_truth_data(preview_result):
+            return preview_result, None, "final_revalidation_skipped_provider_disabled"
+        return fetch_evidence_with_status(record.payload), None, "final_revalidation_skipped_provider_disabled"
+    if provider_state == "blocked":
+        if _has_ground_truth_data(preview_result):
+            return preview_result, None, "final_revalidation_skipped_provider_blocked"
+        return fetch_evidence_with_status(record.payload), None, "final_revalidation_skipped_provider_blocked"
+
+    payload = dict(record.payload)
+    payload["allowed_retailers"] = [chosen_retailer]
+    revalidated = fetch_evidence_with_status(payload)
+    revalidated_at = datetime.now(timezone.utc).isoformat()
+    merged = _merge_ground_truth(preview_result, revalidated, chosen_retailer)
+    return merged, revalidated_at, None
+
+
+def _preview_ground_truth(record) -> GroundTruthResult:
+    evidence = []
+    for item in record.evidence_preview or []:
+        try:
+            evidence.append(EvidenceItem.from_dict(item))
+        except Exception:
+            continue
+    provider_status = []
+    from server.ground_truth.types import ProviderFetchStatus
+    for item in record.provider_status_preview or []:
+        try:
+            provider_status.append(
+                ProviderFetchStatus(
+                    provider=str(item.get("provider", "")),
+                    state=str(item.get("state", "unknown")),
+                    detail=item.get("detail"),
+                    calls_today=item.get("calls_today"),
+                    daily_cap=item.get("daily_cap"),
+                    spend_usd_today=item.get("spend_usd_today"),
+                    daily_spend_cap_usd=item.get("daily_spend_cap_usd"),
+                )
+            )
+        except Exception:
+            continue
+    return GroundTruthResult(evidence=evidence, provider_status=provider_status)
+
+
+def _merge_ground_truth(
+    preview: GroundTruthResult,
+    revalidated: GroundTruthResult,
+    chosen_retailer: str,
+) -> GroundTruthResult:
+    chosen_norm = _normalize_retailer_name(chosen_retailer)
+    preview_evidence = [item for item in preview.evidence if _normalize_retailer_name(item.retailer) != chosen_norm]
+    merged_evidence = preview_evidence + revalidated.evidence
+
+    preview_status = [item for item in preview.provider_status if _normalize_provider_name(item.provider) != _provider_for_retailer(chosen_retailer)]
+    merged_status = preview_status + revalidated.provider_status
+    return GroundTruthResult(evidence=merged_evidence, provider_status=merged_status)
+
+
+def _extract_chosen_retailer(raw_output: str) -> Optional[str]:
+    parsed = parse_agent_output(raw_output)
+    chosen = parsed.chosen
+    if not chosen or not chosen.retailer:
+        return None
+    return _normalize_retailer_name(chosen.retailer)
+
+
+def _normalize_retailer_name(value: str) -> str:
+    lowered = value.strip().lower()
+    if lowered in {"bestbuy", "best buy"}:
+        return "Best Buy"
+    if lowered == "amazon":
+        return "Amazon"
+    if lowered == "apple":
+        return "Apple"
+    return value.strip()
+
+
+def _provider_for_retailer(retailer: str) -> str:
+    normalized = _normalize_retailer_name(retailer)
+    if normalized == "Amazon":
+        return "dataforseo"
+    if normalized == "Best Buy":
+        return "bestbuy"
+    if normalized == "Apple":
+        return "apple"
+    return normalized.lower()
+
+
+def _normalize_provider_name(provider: str) -> str:
+    lowered = provider.strip().lower()
+    if lowered == "best buy":
+        return "bestbuy"
+    return lowered
+
+
+def _provider_state_for_retailer(provider_status_preview: list[dict], retailer: str) -> Optional[str]:
+    provider = _provider_for_retailer(retailer)
+    for item in provider_status_preview:
+        if _normalize_provider_name(str(item.get("provider", ""))) == provider:
+            return str(item.get("state", "")).lower() or None
+    return None
+
+
+def _is_preview_fresh(preview_at: Optional[str], freshness_s: int) -> bool:
+    if not preview_at:
+        return False
+    try:
+        value = preview_at
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        dt = datetime.fromisoformat(value)
+    except Exception:
+        return False
+    return (datetime.now(timezone.utc) - dt).total_seconds() <= float(freshness_s)
+
+
+def _evidence_to_dict(item: EvidenceItem) -> dict:
+    return asdict(item)
+
+
+def _has_ground_truth_data(result: GroundTruthResult) -> bool:
+    return bool(result.evidence or result.provider_status)
