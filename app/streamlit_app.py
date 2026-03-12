@@ -321,8 +321,18 @@ st.markdown("""
     /* Metric Grid */
     .metric-grid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 12px;
+    }
+    @media (max-width: 1100px) {
+        .metric-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+    @media (max-width: 680px) {
+        .metric-grid {
+            grid-template-columns: 1fr;
+        }
     }
     .metric-item {
         background: #151515;
@@ -418,6 +428,11 @@ st.markdown("""
         font-size: 0.7rem;
         color: var(--text-dim);
         line-height: 1.35;
+    }
+    .run-status-shell {
+        margin-bottom: 16px;
+        background: rgba(99, 102, 241, 0.08);
+        border-color: rgba(99, 102, 241, 0.35);
     }
 
     .align-with-input {
@@ -687,10 +702,11 @@ def format_timestamp_human(value: Optional[str]) -> str:
         if parsed.endswith("Z"):
             parsed = parsed[:-1] + "+00:00"
         dt_local = datetime.fromisoformat(parsed).astimezone()
-        month = dt_local.strftime("%B")
+        month = dt_local.strftime("%b")
         day = dt_local.day
         year = dt_local.year
-        time_str = dt_local.strftime("%I:%M:%S %p").lstrip("0")
+        hour_12 = dt_local.hour % 12 or 12
+        time_str = f"{hour_12}:{dt_local.minute:02d}:{dt_local.second:02d} {'AM' if dt_local.hour < 12 else 'PM'}"
         tz_str = dt_local.strftime("%Z")
         suffix = f" {tz_str}" if tz_str else ""
         return f"{month} {day}, {year} at {time_str}{suffix}"
@@ -1241,6 +1257,7 @@ def main():
     if run_error:
         st.error(run_error)
         st.session_state["run_error"] = None
+    run_status_mount = st.empty()
 
     # Input form
     col1, col2 = st.columns([2, 1])
@@ -1418,22 +1435,25 @@ def main():
     if st.button("Run Evaluation", use_container_width=True, disabled=run_disabled):
         agent_input = "demo-agent (case study)" if demo_mode else "openclaw (live)"
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Running Evaluation</div>', unsafe_allow_html=True)
-
-        st.caption("Evaluation is running. Live phase and elapsed time will update below.")
-        scores, x402_response, acp_results, eval_result, run_error = run_evaluation(
-            agent_input,
-            selected_tests,
-            acp_mode,
-            case_study=demo_case if demo_mode else None,
-            live_payload=live_payload if not demo_mode else None,
-            api_url=api_url,
-            api_token=api_token,
-        )
-
-        st.markdown('</div>', unsafe_allow_html=True)
+        with run_status_mount.container():
+            st.markdown(
+                """
+                <div class="card run-status-shell">
+                    <div class="card-title">Evaluation Status</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.caption("Live phase and elapsed time update here while your agent is running.")
+            scores, x402_response, acp_results, eval_result, run_error = run_evaluation(
+                agent_input,
+                selected_tests,
+                acp_mode,
+                case_study=demo_case if demo_mode else None,
+                live_payload=live_payload if not demo_mode else None,
+                api_url=api_url,
+                api_token=api_token,
+            )
 
         if run_error:
             st.session_state["run_error"] = run_error
@@ -1573,146 +1593,143 @@ def show_results():
         badges_html += '</div></div>'
         st.markdown(badges_html, unsafe_allow_html=True)
 
-    # Row 2: Price Evaluation + Raw Agent Output
-    row2_left, row2_right = st.columns(2)
+    # Row 2: Price Evaluation (full width)
+    if eval_result is not None:
+        best_price = _get_eval_field(eval_result, "best_first_party_price_usd")
+        best_retailer = _get_eval_field(eval_result, "best_first_party_retailer")
+        best_source = _get_eval_field(eval_result, "best_first_party_source_type")
+        best_conf = _get_eval_field(eval_result, "best_first_party_confidence")
+        best_url = _get_eval_field(eval_result, "best_first_party_url")
+        chosen_retailer = _get_eval_field(eval_result, "agent_chosen_retailer")
+        chosen_price = _get_eval_field(eval_result, "agent_chosen_price_usd")
+        chosen_url = _get_eval_field(eval_result, "agent_chosen_url")
+        chosen_verified = _get_eval_field(eval_result, "agent_choice_verified")
+        verification_failure_reason = _get_eval_field(eval_result, "verification_failure_reason")
+        disputed_price = _get_eval_field(eval_result, "disputed_price")
+        evidence_status = _get_eval_field(eval_result, "evidence_status")
+        provider_status = _get_eval_field(eval_result, "provider_status") or []
+        preview_status = run_payload.get("preview_status")
+        preview_at = run_payload.get("preview_at")
+        revalidated_at = run_payload.get("revalidated_at")
+        revalidation_skipped_reason = run_payload.get("revalidation_skipped_reason")
+        if chosen_retailer or chosen_price is not None:
+            chosen_label = f"{chosen_retailer or 'Unknown'}"
+            chosen_value = format_currency(chosen_price)
+        else:
+            chosen_label = "Agent choice"
+            chosen_value = "N/A"
 
-    with row2_left:
-        if eval_result is not None:
-            best_price = _get_eval_field(eval_result, "best_first_party_price_usd")
-            best_retailer = _get_eval_field(eval_result, "best_first_party_retailer")
-            best_source = _get_eval_field(eval_result, "best_first_party_source_type")
-            best_conf = _get_eval_field(eval_result, "best_first_party_confidence")
-            best_url = _get_eval_field(eval_result, "best_first_party_url")
-            chosen_retailer = _get_eval_field(eval_result, "agent_chosen_retailer")
-            chosen_price = _get_eval_field(eval_result, "agent_chosen_price_usd")
-            chosen_url = _get_eval_field(eval_result, "agent_chosen_url")
-            chosen_verified = _get_eval_field(eval_result, "agent_choice_verified")
-            verification_failure_reason = _get_eval_field(eval_result, "verification_failure_reason")
-            disputed_price = _get_eval_field(eval_result, "disputed_price")
-            evidence_status = _get_eval_field(eval_result, "evidence_status")
-            provider_status = _get_eval_field(eval_result, "provider_status") or []
-            preview_status = run_payload.get("preview_status")
-            preview_at = run_payload.get("preview_at")
-            revalidated_at = run_payload.get("revalidated_at")
-            revalidation_skipped_reason = run_payload.get("revalidation_skipped_reason")
-            if chosen_retailer or chosen_price is not None:
-                chosen_label = f"{chosen_retailer or 'Unknown'}"
-                chosen_value = format_currency(chosen_price)
-            else:
-                chosen_label = "Agent choice"
-                chosen_value = "N/A"
+        within_budget = "N/A"
+        if _get_eval_field(eval_result, "within_budget") is True:
+            within_budget = "Yes"
+        elif _get_eval_field(eval_result, "within_budget") is False:
+            within_budget = "No"
 
-            within_budget = "N/A"
-            if _get_eval_field(eval_result, "within_budget") is True:
-                within_budget = "Yes"
-            elif _get_eval_field(eval_result, "within_budget") is False:
-                within_budget = "No"
+        price_score = scores.get("Price Comparison Accuracy")
+        if isinstance(price_score, (int, float)):
+            price_score_value = f"{int(price_score)}%"
+        else:
+            price_score_value = "Not evaluated"
 
-            price_score = scores.get("Price Comparison Accuracy")
-            if isinstance(price_score, (int, float)):
-                price_score_value = f"{int(price_score)}%"
-            else:
-                price_score_value = "Not evaluated"
+        best_retailer_safe = html.escape(best_retailer or "N/A")
+        best_source_safe = html.escape(best_source or "N/A")
+        chosen_label_safe = html.escape(chosen_label)
+        chosen_value_safe = html.escape(chosen_value)
+        confidence_safe = html.escape(format_confidence(best_conf))
+        best_price_safe = html.escape(format_currency(best_price))
+        money_left_safe = html.escape(format_currency(_get_eval_field(eval_result, "money_left_on_table_usd")))
+        price_score_safe = html.escape(price_score_value)
+        chosen_verification_safe = (
+            "Verified" if chosen_verified else "Unverified" if chosen_verified is False else "N/A"
+        )
+        verification_reason_safe = html.escape(verification_failure_reason or "N/A")
+        within_budget_safe = html.escape(within_budget)
+        dispute_safe = "Yes" if disputed_price else "No" if disputed_price is False else "N/A"
+        evidence_status_safe = html.escape(evidence_status or ("degraded" if _get_eval_field(eval_result, "evidence_degraded") else "ok"))
+        provider_chips_html = render_provider_chips(provider_status if isinstance(provider_status, list) else [])
+        preview_state_safe = html.escape(preview_status or "N/A")
+        preview_at_safe = html.escape(format_timestamp_human(preview_at))
+        revalidated_at_safe = html.escape(format_timestamp_human(revalidated_at))
+        revalidation_skip_safe = html.escape(revalidation_skipped_reason or "None")
 
-            best_retailer_safe = html.escape(best_retailer or "N/A")
-            best_source_safe = html.escape(best_source or "N/A")
-            chosen_label_safe = html.escape(chosen_label)
-            chosen_value_safe = html.escape(chosen_value)
-            confidence_safe = html.escape(format_confidence(best_conf))
-            best_price_safe = html.escape(format_currency(best_price))
-            money_left_safe = html.escape(format_currency(_get_eval_field(eval_result, "money_left_on_table_usd")))
-            price_score_safe = html.escape(price_score_value)
-            chosen_verification_safe = (
-                "Verified" if chosen_verified else "Unverified" if chosen_verified is False else "N/A"
-            )
-            verification_reason_safe = html.escape(verification_failure_reason or "N/A")
-            within_budget_safe = html.escape(within_budget)
-            dispute_safe = "Yes" if disputed_price else "No" if disputed_price is False else "N/A"
-            evidence_status_safe = html.escape(evidence_status or ("degraded" if _get_eval_field(eval_result, "evidence_degraded") else "ok"))
-            provider_chips_html = render_provider_chips(provider_status if isinstance(provider_status, list) else [])
-            preview_state_safe = html.escape(preview_status or "N/A")
-            preview_at_safe = html.escape(format_timestamp_human(preview_at))
-            revalidated_at_safe = html.escape(format_timestamp_human(revalidated_at))
-            revalidation_skip_safe = html.escape(revalidation_skipped_reason or "None")
-
-            st.markdown(
-                f"""
-                <div class="card">
-                    <div class="card-title">Price Evaluation</div>
-                    <div class="metric-grid">
-                            <div class="metric-item">
-                                <div class="metric-label">Best first-party price</div>
-                                <div class="metric-value">{best_price_safe}</div>
-                            </div>
-                            <div class="metric-item">
-                                <div class="metric-label">Best price source</div>
-                                <div class="metric-value">{best_retailer_safe}</div>
-                            </div>
-                            <div class="metric-item">
-                                <div class="metric-label">Confidence</div>
-                                <div class="metric-value">{confidence_safe}</div>
-                            </div>
-                            <div class="metric-item">
-                                <div class="metric-label">Evidence type</div>
-                                <div class="metric-value">{best_source_safe}</div>
-                            </div>
+        st.markdown(
+            f"""
+            <div class="card">
+                <div class="card-title">Price Evaluation</div>
+                <div class="metric-grid">
                         <div class="metric-item">
-                            <div class="metric-label">Agent choice</div>
-                            <div class="metric-value">{chosen_label_safe} · {chosen_value_safe}</div>
+                            <div class="metric-label">Best first-party price</div>
+                            <div class="metric-value">{best_price_safe}</div>
                         </div>
                         <div class="metric-item">
-                            <div class="metric-label">Agent choice verification</div>
-                            <div class="metric-value">{chosen_verification_safe}</div>
+                            <div class="metric-label">Best price source</div>
+                            <div class="metric-value">{best_retailer_safe}</div>
                         </div>
                         <div class="metric-item">
-                            <div class="metric-label">Verification reason</div>
-                            <div class="metric-value">{verification_reason_safe}</div>
+                            <div class="metric-label">Confidence</div>
+                            <div class="metric-value">{confidence_safe}</div>
                         </div>
                         <div class="metric-item">
-                            <div class="metric-label">Within budget</div>
-                            <div class="metric-value">{within_budget_safe}</div>
+                            <div class="metric-label">Evidence type</div>
+                            <div class="metric-value">{best_source_safe}</div>
                         </div>
-                            <div class="metric-item">
-                                <div class="metric-label">Money left on table</div>
-                                <div class="metric-value">{money_left_safe}</div>
-                            </div>
-                        <div class="metric-item">
-                            <div class="metric-label">Price accuracy</div>
-                            <div class="metric-value">{price_score_safe}</div>
-                        </div>
-                        <div class="metric-item">
-                            <div class="metric-label">Price dispute</div>
-                            <div class="metric-value">{dispute_safe}</div>
-                        </div>
+                    <div class="metric-item">
+                        <div class="metric-label">Agent choice</div>
+                        <div class="metric-value">{chosen_label_safe} · {chosen_value_safe}</div>
                     </div>
-                    <div class="metric-meta-row">
-                        <div class="metric-meta-pill">Evidence: <strong>{evidence_status_safe}</strong></div>
-                        <div class="metric-meta-pill">Preview: <strong>{preview_state_safe}</strong></div>
-                        <div class="metric-meta-pill">Preview at: <strong>{preview_at_safe}</strong></div>
-                        <div class="metric-meta-pill">Revalidated: <strong>{revalidated_at_safe}</strong></div>
-                        <div class="metric-meta-pill">Revalidation skipped: <strong>{revalidation_skip_safe}</strong></div>
+                    <div class="metric-item">
+                        <div class="metric-label">Agent choice verification</div>
+                        <div class="metric-value">{chosen_verification_safe}</div>
                     </div>
-                    <div style="margin-top: 12px;">
-                        <div class="metric-label" style="margin-bottom: 6px;">Providers</div>
-                        <div class="providers-strip">{provider_chips_html}</div>
+                    <div class="metric-item">
+                        <div class="metric-label">Verification reason</div>
+                        <div class="metric-value">{verification_reason_safe}</div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="metric-label">Within budget</div>
+                        <div class="metric-value">{within_budget_safe}</div>
+                    </div>
+                        <div class="metric-item">
+                            <div class="metric-label">Money left on table</div>
+                            <div class="metric-value">{money_left_safe}</div>
+                        </div>
+                    <div class="metric-item">
+                        <div class="metric-label">Price accuracy</div>
+                        <div class="metric-value">{price_score_safe}</div>
+                    </div>
+                    <div class="metric-item">
+                        <div class="metric-label">Price dispute</div>
+                        <div class="metric-value">{dispute_safe}</div>
                     </div>
                 </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                <div class="metric-meta-row">
+                    <div class="metric-meta-pill">Evidence: <strong>{evidence_status_safe}</strong></div>
+                    <div class="metric-meta-pill">Preview: <strong>{preview_state_safe}</strong></div>
+                    <div class="metric-meta-pill">Preview at: <strong>{preview_at_safe}</strong></div>
+                    <div class="metric-meta-pill">Revalidated: <strong>{revalidated_at_safe}</strong></div>
+                    <div class="metric-meta-pill">Revalidation skipped: <strong>{revalidation_skip_safe}</strong></div>
+                </div>
+                <div style="margin-top: 12px;">
+                    <div class="metric-label" style="margin-bottom: 6px;">Providers</div>
+                    <div class="providers-strip">{provider_chips_html}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    with row2_right:
-        st.markdown('<div class="card"><div class="card-title">Raw Agent Output</div>', unsafe_allow_html=True)
-        with st.expander("Show raw output", expanded=False):
-            case_raw = st.session_state.get("case_raw_text")
-            display_text = case_raw or ""
-            if not display_text:
-                st.info("No raw agent output available.")
-            else:
-                st.code(display_text, language="text")
-        st.markdown('</div>', unsafe_allow_html=True)
+    # Row 3: Raw Agent Output (full width, below price evaluation)
+    st.markdown('<div class="card"><div class="card-title">Raw Agent Output</div>', unsafe_allow_html=True)
+    with st.expander("Show raw output", expanded=False):
+        case_raw = st.session_state.get("case_raw_text")
+        display_text = case_raw or ""
+        if not display_text:
+            st.info("No raw agent output available.")
+        else:
+            st.code(display_text, language="text")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    # Row 3: Radar
+    # Row 4: Radar
     st.markdown("**Agent Performance Radar**")
     numeric_scores = [v for v in scores.values() if isinstance(v, (int, float))]
     if len(numeric_scores) < 2:
