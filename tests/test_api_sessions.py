@@ -47,7 +47,17 @@ class ApiSessionIsolationTests(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def _new_session(self) -> tuple[str, str]:
-        resp = self.client.post("/v1/sessions", json={"ttl_seconds": 3600, "max_evals": 3})
+        headers: dict[str, str] = {}
+        bootstrap_token = getattr(app_module, "_BOOTSTRAP_TOKEN", None) or os.getenv(
+            "AGENTEVAL_SESSION_BOOTSTRAP_TOKEN"
+        )
+        if bootstrap_token:
+            headers["X-AgentEval-Bootstrap"] = str(bootstrap_token)
+        resp = self.client.post(
+            "/v1/sessions",
+            json={"ttl_seconds": 3600, "max_evals": 3},
+            headers=headers or None,
+        )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         return data["session_id"], data["session_token"]
