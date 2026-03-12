@@ -57,7 +57,8 @@ Tokens are read from env vars (see below).
 
 ## Environment Variables
 - `AGENTEVAL_SESSION_TOKEN` (required) — session-scoped token for connector + UI/API access.
-- `AGENTEVAL_SESSION_BOOTSTRAP_TOKEN` (optional) — required only if API session bootstrap is protected.
+- `AGENTEVAL_SESSION_BOOTSTRAP_TOKEN` (required when `AGENTEVAL_REQUIRE_BOOTSTRAP=1`) — protects `/v1/sessions`.
+- `AGENTEVAL_REQUIRE_BOOTSTRAP` (optional, default `0`) — when `1`, API startup fails if bootstrap token is missing.
 - `OPENCLAW_GATEWAY_TOKEN` (required) — OpenClaw Gateway token for chat completions.
 - `AGENTEVAL_API_URL` (optional) — overrides config.
 - `AGENTEVAL_DEFAULT_API_URL` (optional, UI only) — pre-fills Live API URL in Streamlit.
@@ -75,6 +76,8 @@ Tokens are read from env vars (see below).
 - `AGENTEVAL_IP_MAX_JOBS_PER_WINDOW` (optional, default `20`) — max job creates per IP per window.
 - `AGENTEVAL_MAX_PROMPT_BYTES` (optional, default `32768`) — prompt payload hard cap.
 - `AGENTEVAL_ALLOWED_ORIGINS` (optional, default `http://localhost:8501`) — comma-separated CORS allowlist.
+- `AGENTEVAL_TRUST_PROXY_HEADERS` (optional, default `0`) — trust forwarded IP headers only when enabled.
+- `AGENTEVAL_TRUSTED_PROXY_IPS` (optional) — comma-separated proxy IPs/CIDRs allowed to supply forwarded IP headers.
 - `AGENTEVAL_PREFETCH_TIMEOUT_S` (optional, default `30`) — max seconds for background preview evidence prefetch.
 - `AGENTEVAL_REVALIDATE_FRESHNESS_SECONDS` (optional, default `60`) — skip completion-time revalidation when preview is fresher than this threshold.
 

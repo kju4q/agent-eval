@@ -12,9 +12,13 @@ This setup deploys two public services:
 ## 2) Set required env vars
 ### API service (`agenteval-api`)
 - `AGENTEVAL_ALLOWED_ORIGINS` = your Streamlit URL (for example `https://app.agenteval.xyz`)
+- `AGENTEVAL_REQUIRE_BOOTSTRAP` = `1`
+- `AGENTEVAL_SESSION_BOOTSTRAP_TOKEN` = long random secret
 - `BESTBUY_API_KEY` = Best Buy API key
 
 Optional:
+- `AGENTEVAL_TRUST_PROXY_HEADERS` = `1`
+- `AGENTEVAL_TRUSTED_PROXY_IPS` = Render proxy IP/CIDR list (if you maintain one)
 - `DATAFORSEO_LOGIN`
 - `DATAFORSEO_PASSWORD`
 - `AGENTEVAL_EVIDENCE_KILL_SWITCH` (`1` disables paid evidence calls)

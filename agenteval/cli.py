@@ -40,9 +40,7 @@ def main() -> None:
 
     connect = sub.add_parser("connect", help="Start the AgentEval connector")
     connect.add_argument("--api-url", help="AgentEval API base URL")
-    connect.add_argument("--api-token", help="AgentEval session token")
     connect.add_argument("--gateway-url", help="OpenClaw Gateway URL")
-    connect.add_argument("--gateway-token", help="OpenClaw Gateway token")
     connect.add_argument("--agent-id", help="OpenClaw agent id")
     connect.add_argument("--poll-interval", type=float, help="Seconds between polls")
     connect.add_argument("--timeout", type=float, help="OpenClaw request timeout (seconds)")
@@ -53,7 +51,6 @@ def main() -> None:
     status = sub.add_parser("status", help="Check AgentEval and OpenClaw connectivity")
     status.add_argument("--api-url", help="AgentEval API base URL")
     status.add_argument("--gateway-url", help="OpenClaw Gateway URL")
-    status.add_argument("--gateway-token", help="OpenClaw Gateway token")
 
     start = sub.add_parser("start", help="Start AgentEval API + connector")
     start.add_argument("--api-url", help="AgentEval API base URL")
@@ -106,8 +103,13 @@ def run_connector(config: ConnectorConfig) -> None:
 
         job_id = job.get("id")
         payload = job.get("payload", {})
-        prompt_summary = _summarize_prompt(payload.get("prompt") or "")
-        logger.info("Picked up job %s: %s", job_id, prompt_summary)
+        prompt = payload.get("prompt") or ""
+        logger.info(
+            "Picked up job %s (agent_id=%s, prompt_chars=%s)",
+            job_id,
+            payload.get("agent_id") or config.agent_id,
+            len(prompt),
+        )
         raw_output, error, elapsed = _execute_job(config, job)
         if error:
             logger.error("Job %s failed: %s", job_id, error)
@@ -200,7 +202,6 @@ def _resolve_connect_config(args: argparse.Namespace) -> ConnectorConfig:
         cfg.get("api_url"),
     )
     api_token = _pick_value(
-        getattr(args, "api_token", None),
         os.getenv("AGENTEVAL_SESSION_TOKEN"),
         cfg.get("api_token"),
     )
@@ -211,7 +212,6 @@ def _resolve_connect_config(args: argparse.Namespace) -> ConnectorConfig:
         "http://127.0.0.1:18789",
     )
     gateway_token = _pick_value(
-        getattr(args, "gateway_token", None),
         os.getenv("OPENCLAW_GATEWAY_TOKEN"),
         cfg.get("gateway_token"),
     )
@@ -298,6 +298,10 @@ def _init_config(path: Path) -> None:
         "timeout": timeout,
     }
     path.write_text(json.dumps(config, indent=2))
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
     print(f"Wrote config to {path}")
     print("Tokens are read from env vars: AGENTEVAL_SESSION_TOKEN and OPENCLAW_GATEWAY_TOKEN.")
 
@@ -312,7 +316,7 @@ def _print_status(args: argparse.Namespace) -> None:
     cfg = _load_config()
     api_url = _pick_value(args.api_url, os.getenv("AGENTEVAL_API_URL"), cfg.get("api_url"))
     gateway_url = _pick_value(args.gateway_url, os.getenv("OPENCLAW_GATEWAY_URL"), cfg.get("gateway_url"))
-    gateway_token = _pick_value(args.gateway_token, os.getenv("OPENCLAW_GATEWAY_TOKEN"), cfg.get("gateway_token"))
+    gateway_token = _pick_value(os.getenv("OPENCLAW_GATEWAY_TOKEN"), cfg.get("gateway_token"))
 
     session_token = _pick_value(
         os.getenv("AGENTEVAL_SESSION_TOKEN"),
@@ -406,15 +410,6 @@ def _log_health_checks(config: ConnectorConfig, headers: dict[str, str]) -> None
                 logger.warning("OpenClaw Gateway check failed (%s)", resp.status_code)
     except httpx.HTTPError as exc:
         logger.warning("OpenClaw Gateway check failed (%s)", exc)
-
-
-def _summarize_prompt(prompt: str, limit: int = 120) -> str:
-    if not prompt:
-        return "(no prompt)"
-    single = " ".join(prompt.split())
-    if len(single) <= limit:
-        return single
-    return f"{single[:limit]}..."
 
 
 def _start_services(args: argparse.Namespace) -> None:

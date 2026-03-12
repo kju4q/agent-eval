@@ -58,8 +58,8 @@ class JobAssignment(BaseModel):
 
 
 class CompleteJobPayload(BaseModel):
-    raw_output: str
-    error: Optional[str] = None
+    raw_output: str = Field(min_length=0, max_length=200000)
+    error: Optional[str] = Field(default=None, max_length=2000)
 
 
 class RunResultPayload(BaseModel):

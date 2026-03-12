@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import logging
 import os
 import secrets
@@ -40,6 +41,39 @@ from server.models import (
 app = FastAPI(title="AgentEval API", version="v0", debug=False)
 store = JobStore()
 LOGGER = logging.getLogger("agenteval.api")
+_REQUIRE_BOOTSTRAP = os.getenv("AGENTEVAL_REQUIRE_BOOTSTRAP", "0").strip().lower() in {"1", "true", "yes", "on"}
+_BOOTSTRAP_TOKEN = os.getenv("AGENTEVAL_SESSION_BOOTSTRAP_TOKEN")
+if _REQUIRE_BOOTSTRAP and not _BOOTSTRAP_TOKEN:
+    raise RuntimeError(
+        "AGENTEVAL_REQUIRE_BOOTSTRAP=1 requires AGENTEVAL_SESSION_BOOTSTRAP_TOKEN to be set."
+    )
+
+
+def _trust_proxy_headers() -> bool:
+    return os.getenv("AGENTEVAL_TRUST_PROXY_HEADERS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _trusted_proxy_networks() -> list[ipaddress._BaseNetwork]:
+    raw = os.getenv("AGENTEVAL_TRUSTED_PROXY_IPS", "").strip()
+    if not raw:
+        return []
+    networks: list[ipaddress._BaseNetwork] = []
+    for item in raw.split(","):
+        value = item.strip()
+        if not value:
+            continue
+        try:
+            if "/" in value:
+                networks.append(ipaddress.ip_network(value, strict=False))
+            else:
+                ip_obj = ipaddress.ip_address(value)
+                if ip_obj.version == 4:
+                    networks.append(ipaddress.ip_network(f"{value}/32", strict=False))
+                else:
+                    networks.append(ipaddress.ip_network(f"{value}/128", strict=False))
+        except ValueError:
+            continue
+    return networks
 
 allowed_origins = [item.strip() for item in os.getenv("AGENTEVAL_ALLOWED_ORIGINS", "http://localhost:8501").split(",") if item.strip()]
 if allowed_origins:
@@ -88,19 +122,40 @@ def _extract_client_ip(
     x_forwarded_for: Optional[str],
     x_real_ip: Optional[str],
 ) -> str:
-    if x_forwarded_for:
-        # Use first hop only
-        return x_forwarded_for.split(",")[0].strip()
-    if x_real_ip:
-        return x_real_ip.strip()
     if request is None:
-        return "unknown"
-    client = request.client
-    return client.host if client else "unknown"
+        direct_ip = "unknown"
+    else:
+        client = request.client
+        direct_ip = client.host if client else "unknown"
+
+    if not _trust_proxy_headers():
+        return direct_ip
+
+    trusted_networks = _trusted_proxy_networks()
+    if not trusted_networks:
+        # Fail closed: do not trust forwarded headers without explicit trusted proxies.
+        return direct_ip
+    try:
+        parsed_direct = ipaddress.ip_address(direct_ip)
+    except ValueError:
+        return direct_ip
+    if not any(parsed_direct in network for network in trusted_networks):
+        return direct_ip
+
+    if x_forwarded_for:
+        # Use first hop only when the immediate peer is trusted.
+        forwarded = x_forwarded_for.split(",")[0].strip()
+        if forwarded:
+            return forwarded
+    if x_real_ip:
+        real_ip = x_real_ip.strip()
+        if real_ip:
+            return real_ip
+    return direct_ip
 
 
 def _require_session_bootstrap(x_agenteval_bootstrap: Optional[str] = Header(default=None)) -> None:
-    expected = os.getenv("AGENTEVAL_SESSION_BOOTSTRAP_TOKEN")
+    expected = _BOOTSTRAP_TOKEN
     if not expected:
         return
     if not x_agenteval_bootstrap:

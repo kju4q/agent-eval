@@ -9,10 +9,18 @@ services:
     envVars:
       - key: AGENTEVAL_ALLOWED_ORIGINS
         sync: false
+      - key: AGENTEVAL_REQUIRE_BOOTSTRAP
+        value: "1"
+      - key: AGENTEVAL_SESSION_BOOTSTRAP_TOKEN
+        sync: false
       - key: AGENTEVAL_IP_WINDOW_SECONDS
         value: "60"
       - key: AGENTEVAL_IP_MAX_JOBS_PER_WINDOW
         value: "20"
+      - key: AGENTEVAL_TRUST_PROXY_HEADERS
+        value: "1"
+      - key: AGENTEVAL_TRUSTED_PROXY_IPS
+        sync: false
       - key: AGENTEVAL_MAX_PROMPT_BYTES
         value: "32768"
       - key: AGENTEVAL_DATAFORSEO_DAILY_CALL_CAP
