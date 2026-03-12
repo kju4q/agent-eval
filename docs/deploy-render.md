@@ -7,7 +7,7 @@ This setup deploys two public services:
 ## 1) Create from blueprint
 1. Push this repo to GitHub.
 2. In Render: **New** -> **Blueprint**.
-3. Select this repo (uses [`render.yaml`](/Users/qendresahoti/Downloads/agent-eval/render.yaml)).
+3. Select this repo (uses [`render.yaml`](../render.yaml)).
 
 ## 2) Set required env vars
 ### API service (`agenteval-api`)

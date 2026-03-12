@@ -9,8 +9,8 @@ Status: Work in progress (early demo).
 - Run: `streamlit run app/streamlit_app.py`
 
 ## Production Deploy (Render)
-- Blueprint: [`render.yaml`](/Users/qendresahoti/Downloads/agent-eval/render.yaml)
-- Runbook: [`docs/deploy-render.md`](/Users/qendresahoti/Downloads/agent-eval/docs/deploy-render.md)
+- Blueprint: [`render.yaml`](render.yaml)
+- Runbook: [`docs/deploy-render.md`](docs/deploy-render.md)
 
 ## Live OpenClaw (Local)
 1. Enable OpenClaw chat completions in `~/.openclaw/openclaw.json`:
