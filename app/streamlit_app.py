@@ -896,12 +896,13 @@ def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_
 
         status_container.markdown("**Running live evaluation...**")
         progress_bar.progress(0.4)
-        poll_timeout = 240.0
+        default_poll_timeout = float(os.getenv("AGENTEVAL_DEFAULT_LIVE_TIMEOUT_S", "600"))
+        poll_timeout = max(30.0, default_poll_timeout)
         if live_payload:
             try:
                 poll_timeout = max(30.0, float(live_payload.get("timeout_s") or poll_timeout))
             except (TypeError, ValueError):
-                poll_timeout = 240.0
+                poll_timeout = max(30.0, default_poll_timeout)
         detail_container.markdown(
             "Agent browsing in live mode. Typical completion is 2-8 minutes for web tasks."
         )

@@ -406,23 +406,23 @@ def _build_final_ground_truth(record, raw_output: str) -> tuple[GroundTruthResul
     if not chosen_retailer:
         if _has_ground_truth_data(preview_result):
             return preview_result, None, "final_revalidation_skipped_no_clear_choice"
-        return fetch_evidence_with_status(record.payload), None, "final_revalidation_skipped_no_clear_choice"
+        return preview_result, None, "final_revalidation_skipped_preview_unavailable"
 
     freshness_s = int(os.getenv("AGENTEVAL_REVALIDATE_FRESHNESS_SECONDS", "60"))
     if _is_preview_fresh(record.preview_at, freshness_s):
         if _has_ground_truth_data(preview_result):
             return preview_result, None, "final_revalidation_skipped_fresh_preview"
-        return fetch_evidence_with_status(record.payload), None, "final_revalidation_skipped_fresh_preview"
+        return preview_result, None, "final_revalidation_skipped_preview_unavailable"
 
     provider_state = _provider_state_for_retailer(record.provider_status_preview or [], chosen_retailer)
     if provider_state == "disabled":
         if _has_ground_truth_data(preview_result):
             return preview_result, None, "final_revalidation_skipped_provider_disabled"
-        return fetch_evidence_with_status(record.payload), None, "final_revalidation_skipped_provider_disabled"
+        return preview_result, None, "final_revalidation_skipped_preview_unavailable"
     if provider_state == "blocked":
         if _has_ground_truth_data(preview_result):
             return preview_result, None, "final_revalidation_skipped_provider_blocked"
-        return fetch_evidence_with_status(record.payload), None, "final_revalidation_skipped_provider_blocked"
+        return preview_result, None, "final_revalidation_skipped_preview_unavailable"
 
     payload = dict(record.payload)
     payload["allowed_retailers"] = [chosen_retailer]
