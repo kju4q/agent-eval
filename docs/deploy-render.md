@@ -19,6 +19,7 @@ This setup deploys two public services:
 Optional:
 - `AGENTEVAL_TRUST_PROXY_HEADERS` = `1`
 - `AGENTEVAL_TRUSTED_PROXY_IPS` = Render proxy IP/CIDR list (if you maintain one)
+- `AGENTEVAL_REVALIDATE_TIMEOUT_S` = `30` (fallback to preview if completion-time revalidation is slow)
 - `DATAFORSEO_LOGIN`
 - `DATAFORSEO_PASSWORD`
 - `AGENTEVAL_EVIDENCE_KILL_SWITCH` (`1` disables paid evidence calls)

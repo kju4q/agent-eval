@@ -481,7 +481,12 @@ def _build_final_ground_truth(record, raw_output: str) -> tuple[GroundTruthResul
 
     payload = dict(record.payload)
     payload["allowed_retailers"] = [chosen_retailer]
-    revalidated = fetch_evidence_with_status(payload)
+    revalidate_timeout_s = int(os.getenv("AGENTEVAL_REVALIDATE_TIMEOUT_S", "30"))
+    revalidated, revalidation_reason = _revalidate_with_timeout(payload, revalidate_timeout_s)
+    if revalidated is None:
+        if _has_ground_truth_data(preview_result):
+            return preview_result, None, revalidation_reason
+        return preview_result, None, revalidation_reason or "final_revalidation_skipped_preview_unavailable"
     revalidated_at = datetime.now(timezone.utc).isoformat()
     merged = _merge_ground_truth(preview_result, revalidated, chosen_retailer)
     return merged, revalidated_at, None
@@ -592,3 +597,27 @@ def _evidence_to_dict(item: EvidenceItem) -> dict:
 
 def _has_ground_truth_data(result: GroundTruthResult) -> bool:
     return bool(result.evidence or result.provider_status)
+
+
+def _revalidate_with_timeout(
+    payload: dict,
+    timeout_s: int,
+) -> tuple[Optional[GroundTruthResult], Optional[str]]:
+    async def _run() -> GroundTruthResult:
+        with anyio.fail_after(timeout_s):
+            return await anyio.to_thread.run_sync(fetch_evidence_with_status, payload)
+
+    try:
+        return anyio.run(_run), None
+    except TimeoutError:
+        LOGGER.warning(
+            "Final revalidation timed out after %ss; falling back to preview evidence.",
+            timeout_s,
+        )
+        return None, "final_revalidation_skipped_timeout"
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning(
+            "Final revalidation failed (%s); falling back to preview evidence.",
+            exc.__class__.__name__,
+        )
+        return None, "final_revalidation_skipped_error"

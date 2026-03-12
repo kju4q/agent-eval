@@ -31,6 +31,8 @@ services:
         value: "0.05"
       - key: AGENTEVAL_PREFETCH_TIMEOUT_S
         value: "30"
+      - key: AGENTEVAL_REVALIDATE_TIMEOUT_S
+        value: "30"
       - key: AGENTEVAL_REVALIDATE_FRESHNESS_SECONDS
         value: "60"
       - key: BESTBUY_API_KEY

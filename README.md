@@ -79,6 +79,7 @@ Tokens are read from env vars (see below).
 - `AGENTEVAL_TRUST_PROXY_HEADERS` (optional, default `0`) — trust forwarded IP headers only when enabled.
 - `AGENTEVAL_TRUSTED_PROXY_IPS` (optional) — comma-separated proxy IPs/CIDRs allowed to supply forwarded IP headers.
 - `AGENTEVAL_PREFETCH_TIMEOUT_S` (optional, default `30`) — max seconds for background preview evidence prefetch.
+- `AGENTEVAL_REVALIDATE_TIMEOUT_S` (optional, default `30`) — max seconds for completion-time chosen-retailer revalidation before preview fallback.
 - `AGENTEVAL_REVALIDATE_FRESHNESS_SECONDS` (optional, default `60`) — skip completion-time revalidation when preview is fresher than this threshold.
 
 ## Evidence Health
