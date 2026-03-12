@@ -345,6 +345,79 @@ st.markdown("""
         color: var(--text-dim);
         font-weight: 600;
     }
+    .metric-meta-row {
+        margin-top: 12px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .metric-meta-pill {
+        background: #121212;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 8px 10px;
+        font-size: 0.72rem;
+        color: var(--text-mid);
+    }
+    .metric-meta-pill strong {
+        color: var(--text);
+        font-weight: 700;
+    }
+    .providers-strip {
+        margin-top: 10px;
+        display: flex;
+        gap: 10px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+    }
+    .provider-card {
+        min-width: 220px;
+        background: #141414;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+    }
+    .provider-title-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+    }
+    .provider-title {
+        font-size: 0.78rem;
+        font-weight: 700;
+        color: var(--text);
+    }
+    .provider-state {
+        font-size: 0.66rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        border-radius: 999px;
+        padding: 3px 8px;
+        border: 1px solid transparent;
+    }
+    .provider-ok {
+        color: var(--success);
+        border-color: rgba(34, 197, 94, 0.3);
+        background: rgba(34, 197, 94, 0.1);
+    }
+    .provider-warning {
+        color: var(--warning);
+        border-color: rgba(245, 158, 11, 0.3);
+        background: rgba(245, 158, 11, 0.1);
+    }
+    .provider-error {
+        color: var(--danger);
+        border-color: rgba(239, 68, 68, 0.3);
+        background: rgba(239, 68, 68, 0.1);
+    }
+    .provider-detail {
+        font-size: 0.7rem;
+        color: var(--text-dim);
+        line-height: 1.35;
+    }
 
     .align-with-input {
         margin-top: 28px;
@@ -605,6 +678,87 @@ def format_confidence(value: Optional[float]) -> str:
     return f"{value:.2f}"
 
 
+def format_timestamp_human(value: Optional[str]) -> str:
+    if not value:
+        return "N/A"
+    try:
+        parsed = value
+        if parsed.endswith("Z"):
+            parsed = parsed[:-1] + "+00:00"
+        dt_local = datetime.fromisoformat(parsed).astimezone()
+        month = dt_local.strftime("%B")
+        day = dt_local.day
+        year = dt_local.year
+        time_str = dt_local.strftime("%I:%M:%S %p").lstrip("0")
+        tz_str = dt_local.strftime("%Z")
+        suffix = f" {tz_str}" if tz_str else ""
+        return f"{month} {day}, {year} at {time_str}{suffix}"
+    except Exception:
+        return value
+
+
+def format_duration_human(value: Optional[float]) -> str:
+    if value is None:
+        return "N/A"
+    try:
+        secs = int(round(float(value)))
+    except (TypeError, ValueError):
+        return "N/A"
+    mins, rem = divmod(secs, 60)
+    if mins == 0:
+        return f"{rem}s"
+    return f"{mins}m {rem}s"
+
+
+def render_provider_chips(provider_status: list[dict]) -> str:
+    if not provider_status:
+        return '<div class="provider-card"><div class="provider-title-row"><span class="provider-title">No provider data</span><span class="provider-state provider-warning">Unknown</span></div></div>'
+    cards = []
+    for item in provider_status:
+        if not isinstance(item, dict):
+            continue
+        provider = html.escape(str(item.get("provider", "Provider")))
+        state = str(item.get("state", "unknown")).lower()
+        if state == "ok":
+            cls = "provider-ok"
+            state_label = "OK"
+        elif state in {"disabled", "blocked"}:
+            cls = "provider-warning"
+            state_label = state.upper()
+        else:
+            cls = "provider-error"
+            state_label = state.upper()
+
+        detail_bits = []
+        detail = item.get("detail")
+        if detail:
+            detail_bits.append(html.escape(str(detail)))
+        calls_today = item.get("calls_today")
+        daily_cap = item.get("daily_cap")
+        if calls_today is not None and daily_cap is not None:
+            detail_bits.append(f"Calls: {calls_today}/{daily_cap}")
+        spend_today = item.get("spend_usd_today")
+        spend_cap = item.get("daily_spend_cap_usd")
+        if spend_today is not None and spend_cap is not None:
+            detail_bits.append(f"Spend: ${float(spend_today):.4f}/${float(spend_cap):.4f}")
+        detail_html = "<br>".join(detail_bits) if detail_bits else "No extra details."
+
+        cards.append(
+            f"""
+            <div class="provider-card">
+                <div class="provider-title-row">
+                    <span class="provider-title">{provider}</span>
+                    <span class="provider-state {cls}">{state_label}</span>
+                </div>
+                <div class="provider-detail">{detail_html}</div>
+            </div>
+            """
+        )
+    if not cards:
+        return '<div class="provider-card"><div class="provider-title-row"><span class="provider-title">No provider data</span><span class="provider-state provider-warning">Unknown</span></div></div>'
+    return "".join(cards)
+
+
 def _get_eval_field(eval_result, field: str):
     if eval_result is None:
         return None
@@ -748,7 +902,7 @@ def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_
             except (TypeError, ValueError):
                 poll_timeout = 240.0
         detail_container.markdown(
-            "Agent browsing in live mode. Typical completion is 2-5 minutes for web tasks."
+            "Agent browsing in live mode. Typical completion is 2-8 minutes for web tasks."
         )
 
         def _tick(elapsed_s: float, run_state: str, run_data: Optional[dict]) -> None:
@@ -767,8 +921,8 @@ def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_
                 if preview_status:
                     preview_label = f" • Preview: {preview_status}"
             detail_container.markdown(
-                f"State: **{state_label}** • Elapsed: **{int(elapsed_s)}s**{preview_label}. "
-                "Live tasks can take several minutes."
+                f"Phase: **{state_label}** • Elapsed: **{format_duration_human(elapsed_s)}**{preview_label}. "
+                "You can leave this page and check Run History anytime."
             )
 
         eval_result, raw_output, error, status, run_data = _poll_live_result(
@@ -1142,17 +1296,15 @@ def main():
                 "Prompt",
                 placeholder="Find the lowest listed price for ...",
             )
-            timeout_s = st.number_input(
-                "OpenClaw timeout (seconds)",
-                min_value=30.0,
-                value=240.0,
-                step=30.0,
-                help="Increase this for large prompts or slow browsing tasks.",
-            )
+            standard_timeout_s = 600.0
             fast_mode = st.checkbox(
                 "Fast mode (180s max)",
                 value=False,
-                help="Caps timeout to 180 seconds for quicker feedback.",
+                help="Optimizes for speed. Standard mode allows longer browsing runs.",
+            )
+            st.caption(
+                "Standard mode allows up to 600 seconds for live browsing tasks. "
+                "Fast mode caps runs at 180 seconds."
             )
             st.markdown("**Rules**")
             allow_third_party = st.checkbox("Allow third-party sellers", value=False)
@@ -1173,10 +1325,10 @@ def main():
                 },
                 "agent_id": agent_id.strip() or "main",
                 "source": "openclaw",
-                "timeout_s": timeout_s,
+                "timeout_s": standard_timeout_s,
             }
             if fast_mode:
-                live_payload["timeout_s"] = min(float(timeout_s), 180.0)
+                live_payload["timeout_s"] = 180.0
             st.caption("Connector must be running and polling this AgentEval API.")
 
         st.markdown("<br>", unsafe_allow_html=True)
@@ -1266,33 +1418,16 @@ def main():
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">Running Evaluation</div>', unsafe_allow_html=True)
 
-        overlay = st.empty()
-        overlay.markdown(
-            """
-            <div style="position: fixed; inset: 0; background: rgba(10,10,10,0.6); z-index: 9999; display: flex; align-items: center; justify-content: center;">
-                <div style="background: #151515; border: 1px solid #2A2A2A; border-radius: 16px; padding: 28px 32px; text-align: center; min-width: 260px;">
-                    <div style="font-size: 0.85rem; color: #A0A0A0; margin-bottom: 10px;">Running evaluation</div>
-                    <div style="width: 42px; height: 42px; border: 3px solid #2A2A2A; border-top-color: #6366F1; border-radius: 50%; margin: 0 auto 12px auto; animation: spin 0.9s linear infinite;"></div>
-                    <div style="font-size: 0.9rem; color: #FFFFFF;">Please wait…</div>
-                </div>
-            </div>
-            <style>
-            @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-            </style>
-            """,
-            unsafe_allow_html=True,
+        st.caption("Evaluation is running. Live phase and elapsed time will update below.")
+        scores, x402_response, acp_results, eval_result, run_error = run_evaluation(
+            agent_input,
+            selected_tests,
+            acp_mode,
+            case_study=demo_case if demo_mode else None,
+            live_payload=live_payload if not demo_mode else None,
+            api_url=api_url,
+            api_token=api_token,
         )
-        with st.spinner("Running evaluation..."):
-            scores, x402_response, acp_results, eval_result, run_error = run_evaluation(
-                agent_input,
-                selected_tests,
-                acp_mode,
-                case_study=demo_case if demo_mode else None,
-                live_payload=live_payload if not demo_mode else None,
-                api_url=api_url,
-                api_token=api_token,
-            )
-        overlay.empty()
 
         st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1490,20 +1625,10 @@ def show_results():
             within_budget_safe = html.escape(within_budget)
             dispute_safe = "Yes" if disputed_price else "No" if disputed_price is False else "N/A"
             evidence_status_safe = html.escape(evidence_status or ("degraded" if _get_eval_field(eval_result, "evidence_degraded") else "ok"))
-            provider_summary = "N/A"
-            if isinstance(provider_status, list) and provider_status:
-                parts = []
-                for item in provider_status:
-                    if isinstance(item, dict):
-                        provider = str(item.get("provider", "provider"))
-                        state = str(item.get("state", "unknown"))
-                        parts.append(f"{provider}:{state}")
-                if parts:
-                    provider_summary = ", ".join(parts)
-            provider_summary_safe = html.escape(provider_summary)
+            provider_chips_html = render_provider_chips(provider_status if isinstance(provider_status, list) else [])
             preview_state_safe = html.escape(preview_status or "N/A")
-            preview_at_safe = html.escape(preview_at or "N/A")
-            revalidated_at_safe = html.escape(revalidated_at or "N/A")
+            preview_at_safe = html.escape(format_timestamp_human(preview_at))
+            revalidated_at_safe = html.escape(format_timestamp_human(revalidated_at))
             revalidation_skip_safe = html.escape(revalidation_skipped_reason or "None")
 
             st.markdown(
@@ -1555,30 +1680,17 @@ def show_results():
                             <div class="metric-label">Price dispute</div>
                             <div class="metric-value">{dispute_safe}</div>
                         </div>
-                        <div class="metric-item">
-                            <div class="metric-label">Evidence status</div>
-                            <div class="metric-value">{evidence_status_safe}</div>
-                        </div>
-                        <div class="metric-item">
-                            <div class="metric-label">Providers</div>
-                            <div class="metric-value">{provider_summary_safe}</div>
-                        </div>
-                        <div class="metric-item">
-                            <div class="metric-label">Preview status</div>
-                            <div class="metric-value">{preview_state_safe}</div>
-                        </div>
-                        <div class="metric-item">
-                            <div class="metric-label">Preview at</div>
-                            <div class="metric-value">{preview_at_safe}</div>
-                        </div>
-                        <div class="metric-item">
-                            <div class="metric-label">Revalidated at</div>
-                            <div class="metric-value">{revalidated_at_safe}</div>
-                        </div>
-                        <div class="metric-item">
-                            <div class="metric-label">Revalidation skipped</div>
-                            <div class="metric-value">{revalidation_skip_safe}</div>
-                        </div>
+                    </div>
+                    <div class="metric-meta-row">
+                        <div class="metric-meta-pill">Evidence: <strong>{evidence_status_safe}</strong></div>
+                        <div class="metric-meta-pill">Preview: <strong>{preview_state_safe}</strong></div>
+                        <div class="metric-meta-pill">Preview at: <strong>{preview_at_safe}</strong></div>
+                        <div class="metric-meta-pill">Revalidated: <strong>{revalidated_at_safe}</strong></div>
+                        <div class="metric-meta-pill">Revalidation skipped: <strong>{revalidation_skip_safe}</strong></div>
+                    </div>
+                    <div style="margin-top: 12px;">
+                        <div class="metric-label" style="margin-bottom: 6px;">Providers</div>
+                        <div class="providers-strip">{provider_chips_html}</div>
                     </div>
                 </div>
                 """,
@@ -1626,10 +1738,10 @@ def show_results():
                         "Run ID": run.get("id"),
                         "Status": run.get("status"),
                         "Preview": run.get("preview_status") or "",
-                        "Started": run.get("started_at") or "",
-                        "Completed": run.get("completed_at") or "",
-                        "Duration (s)": run.get("duration_s") or "",
-                        "Updated": run.get("updated_at"),
+                        "Started": format_timestamp_human(run.get("started_at")),
+                        "Completed": format_timestamp_human(run.get("completed_at")),
+                        "Duration": format_duration_human(run.get("duration_s")),
+                        "Updated": format_timestamp_human(run.get("updated_at")),
                         "Error": run.get("error") or "",
                     }
                 )
