@@ -8,6 +8,10 @@ Status: Work in progress (early demo).
 - Streamlit app: `app/streamlit_app.py`
 - Run: `streamlit run app/streamlit_app.py`
 
+## Production Deploy (Render)
+- Blueprint: [`render.yaml`](/Users/qendresahoti/Downloads/agent-eval/render.yaml)
+- Runbook: [`docs/deploy-render.md`](/Users/qendresahoti/Downloads/agent-eval/docs/deploy-render.md)
+
 ## Live OpenClaw (Local)
 1. Enable OpenClaw chat completions in `~/.openclaw/openclaw.json`:
    - `gateway.http.endpoints.chatCompletions.enabled = true`
@@ -56,6 +60,7 @@ Tokens are read from env vars (see below).
 - `AGENTEVAL_SESSION_BOOTSTRAP_TOKEN` (optional) — required only if API session bootstrap is protected.
 - `OPENCLAW_GATEWAY_TOKEN` (required) — OpenClaw Gateway token for chat completions.
 - `AGENTEVAL_API_URL` (optional) — overrides config.
+- `AGENTEVAL_DEFAULT_API_URL` (optional, UI only) — pre-fills Live API URL in Streamlit.
 - `OPENCLAW_GATEWAY_URL` (optional) — overrides config.
 - `OPENCLAW_AGENT_ID` (optional) — overrides config.
 - `AGENTEVAL_POLL_INTERVAL` (optional) — overrides config.

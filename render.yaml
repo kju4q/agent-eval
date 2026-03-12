@@ -1,0 +1,46 @@
+services:
+  - type: web
+    name: agenteval-api
+    runtime: python
+    plan: starter
+    region: oregon
+    buildCommand: pip install -r requirements.txt && pip install -e .
+    startCommand: uvicorn server.app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: AGENTEVAL_ALLOWED_ORIGINS
+        sync: false
+      - key: AGENTEVAL_IP_WINDOW_SECONDS
+        value: "60"
+      - key: AGENTEVAL_IP_MAX_JOBS_PER_WINDOW
+        value: "20"
+      - key: AGENTEVAL_MAX_PROMPT_BYTES
+        value: "32768"
+      - key: AGENTEVAL_DATAFORSEO_DAILY_CALL_CAP
+        value: "200"
+      - key: AGENTEVAL_DATAFORSEO_DAILY_USD_CAP
+        value: "10.0"
+      - key: AGENTEVAL_DATAFORSEO_COST_PER_CALL_USD
+        value: "0.05"
+      - key: AGENTEVAL_PREFETCH_TIMEOUT_S
+        value: "30"
+      - key: AGENTEVAL_REVALIDATE_FRESHNESS_SECONDS
+        value: "60"
+      - key: BESTBUY_API_KEY
+        sync: false
+      - key: DATAFORSEO_LOGIN
+        sync: false
+      - key: DATAFORSEO_PASSWORD
+        sync: false
+      - key: AGENTEVAL_EVIDENCE_KILL_SWITCH
+        value: "0"
+
+  - type: web
+    name: agenteval-ui
+    runtime: python
+    plan: starter
+    region: oregon
+    buildCommand: pip install -r requirements.txt && pip install -e .
+    startCommand: streamlit run app/streamlit_app.py --server.address 0.0.0.0 --server.port $PORT
+    envVars:
+      - key: AGENTEVAL_DEFAULT_API_URL
+        sync: false

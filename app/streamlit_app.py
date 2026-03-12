@@ -5,6 +5,7 @@ import random
 import io
 import sys
 import html
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable
@@ -1269,8 +1270,10 @@ def main():
             else:
                 st.warning("No case studies found.")
         else:
+            default_api_url = os.getenv("AGENTEVAL_DEFAULT_API_URL", "")
             api_url = st.text_input(
                 "AgentEval API URL",
+                value=default_api_url,
                 placeholder="http://localhost:8000",
                 help="Hosted API that the connector polls for jobs.",
             )
