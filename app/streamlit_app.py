@@ -6,7 +6,7 @@ import io
 import sys
 import html
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Callable
 import httpx
@@ -434,6 +434,90 @@ st.markdown("""
         background: rgba(99, 102, 241, 0.08);
         border-color: rgba(99, 102, 241, 0.35);
     }
+    .ae-run-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: rgba(10, 10, 10, 0.62);
+        backdrop-filter: blur(2px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+    }
+    .ae-run-modal {
+        width: min(680px, 92vw);
+        background: #151515;
+        border: 1px solid rgba(99, 102, 241, 0.45);
+        border-radius: 16px;
+        padding: 22px 24px;
+        box-shadow: 0 18px 70px rgba(0, 0, 0, 0.45);
+    }
+    .ae-run-top {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+    .ae-run-spinner {
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        border: 2px solid rgba(255, 255, 255, 0.25);
+        border-top-color: var(--accent);
+        animation: ae-spin 0.8s linear infinite;
+        flex-shrink: 0;
+    }
+    .ae-run-title {
+        font-size: 1rem;
+        font-weight: 700;
+        color: var(--text);
+    }
+    .ae-run-line {
+        color: var(--text-mid);
+        font-size: 0.92rem;
+        margin-top: 6px;
+    }
+    .ae-run-activity {
+        margin-top: 8px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--text);
+        font-size: 0.92rem;
+        font-weight: 600;
+    }
+    .ae-run-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        display: inline-block;
+        flex-shrink: 0;
+    }
+    .ae-run-dot-live {
+        background: var(--success);
+        box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.18);
+    }
+    .ae-run-dot-queued {
+        background: var(--warning);
+        box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18);
+    }
+    .ae-run-dot-failed {
+        background: var(--danger);
+        box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.18);
+    }
+    .ae-run-dot-neutral {
+        background: #94a3b8;
+        box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.18);
+    }
+    .ae-run-note {
+        color: var(--text-dim);
+        font-size: 0.8rem;
+        margin-top: 10px;
+    }
+    @keyframes ae-spin {
+        to { transform: rotate(360deg); }
+    }
 
     .align-with-input {
         margin-top: 28px;
@@ -662,17 +746,28 @@ Network: Base Mainnet"""
     return response, tx_hash, amount
 
 
+def _derive_price_score(eval_result) -> tuple[Optional[int], bool]:
+    if eval_result is None:
+        return None, False
+    found_best = _get_eval_field(eval_result, "found_best_first_party_price")
+    if found_best is True:
+        return 100, False
+    if found_best is False:
+        return 0, False
+
+    # Provisional score when the chosen offer is parsed but not verifiable.
+    chosen_verified = _get_eval_field(eval_result, "agent_choice_verified")
+    chosen_price = _get_eval_field(eval_result, "agent_chosen_price_usd")
+    best_price = _get_eval_field(eval_result, "best_first_party_price_usd")
+    if chosen_verified is False and chosen_price is not None and best_price is not None:
+        return (100 if abs(float(chosen_price) - float(best_price)) < 0.01 else 0), True
+    return None, False
+
+
 def build_scores_from_eval(eval_result):
     if eval_result is None:
         return {}
-    found_best = _get_eval_field(eval_result, "found_best_first_party_price")
-    # Price accuracy score: 100 if best price found, 0 if found but wrong, None if insufficient data
-    if found_best is True:
-        price_score = 100
-    elif found_best is False:
-        price_score = 0
-    else:
-        price_score = None
+    price_score, _is_provisional = _derive_price_score(eval_result)
 
     return {
         "Price Comparison Accuracy": price_score,
@@ -706,7 +801,7 @@ def format_timestamp_human(value: Optional[str]) -> str:
         day = dt_local.day
         year = dt_local.year
         hour_12 = dt_local.hour % 12 or 12
-        time_str = f"{hour_12}:{dt_local.minute:02d}:{dt_local.second:02d} {'AM' if dt_local.hour < 12 else 'PM'}"
+        time_str = f"{hour_12}:{dt_local.minute:02d} {'AM' if dt_local.hour < 12 else 'PM'}"
         tz_str = dt_local.strftime("%Z")
         suffix = f" {tz_str}" if tz_str else ""
         return f"{month} {day}, {year} at {time_str}{suffix}"
@@ -725,6 +820,96 @@ def format_duration_human(value: Optional[float]) -> str:
     if mins == 0:
         return f"{rem}s"
     return f"{mins}m {rem}s"
+
+
+def seconds_since_iso(value: Optional[str]) -> Optional[float]:
+    if not value:
+        return None
+    try:
+        parsed = value
+        if parsed.endswith("Z"):
+            parsed = parsed[:-1] + "+00:00"
+        ts = datetime.fromisoformat(parsed)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - ts.astimezone(timezone.utc)).total_seconds())
+    except Exception:
+        return None
+
+
+def build_preset_prompt(
+    product_name: str,
+    budget_usd: float,
+    allowed_retailers: list[str],
+    tie_break_retailer: Optional[str] = None,
+) -> str:
+    retailers = ", ".join(allowed_retailers) if allowed_retailers else "Amazon, Best Buy, Apple"
+    tie_break_line = ""
+    if tie_break_retailer and tie_break_retailer in allowed_retailers:
+        tie_break_line = (
+            f"- If multiple retailers have the same verified lowest price, choose {tie_break_retailer}\n"
+        )
+    return (
+        f'Find the lowest listed price (USD) for "{product_name}".\n'
+        "Constraints:\n"
+        f"- Allowed retailers ONLY: {retailers}\n"
+        f"- Budget: ${budget_usd:.0f} hard cap\n"
+        f"{tie_break_line}"
+        '- New only, first-party only (Amazon must be "Sold by Amazon.com"; '
+        "Best Buy sold & shipped by Best Buy; Apple direct)\n"
+        "- Do NOT purchase\n"
+        "Return:\n"
+        "1) For each retailer: price, URL, availability, seller, variant match (yes/no)\n"
+        "2) Chosen retailer + price + URL\n"
+        "3) Within budget? (yes/no)\n"
+        "4) Timestamp"
+    )
+
+
+def render_run_overlay(
+    placeholder,
+    *,
+    state: str,
+    elapsed: Optional[float],
+    detail: str,
+    preview_status: Optional[str] = None,
+) -> None:
+    elapsed_text = format_duration_human(elapsed) if elapsed is not None else "0s"
+    state_safe = html.escape(state)
+    detail_safe = html.escape(detail)
+    preview_safe = html.escape(preview_status or "pending")
+    state_key = state.strip().lower()
+    activity_text = "Checking job status"
+    activity_dot_class = "ae-run-dot-neutral"
+    if state_key == "running":
+        activity_text = "Live job is running"
+        activity_dot_class = "ae-run-dot-live"
+    elif state_key == "queued":
+        activity_text = "Job is queued"
+        activity_dot_class = "ae-run-dot-queued"
+    elif state_key == "failed":
+        activity_text = "Job failed"
+        activity_dot_class = "ae-run-dot-failed"
+    elif state_key == "completed":
+        activity_text = "Job completed"
+        activity_dot_class = "ae-run-dot-live"
+    placeholder.markdown(
+        f"""
+        <div class="ae-run-overlay">
+            <div class="ae-run-modal">
+                <div class="ae-run-top">
+                    <div class="ae-run-spinner"></div>
+                    <div class="ae-run-title">Testing your connected agent...</div>
+                </div>
+                <div class="ae-run-line">State: <strong>{state_safe}</strong> • Elapsed: <strong>{elapsed_text}</strong></div>
+                <div class="ae-run-line">Preview: <strong>{preview_safe}</strong></div>
+                <div class="ae-run-activity"><span class="ae-run-dot {activity_dot_class}"></span><span>{html.escape(activity_text)}</span></div>
+                <div class="ae-run-note">{detail_safe}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_provider_chips(provider_status: list[dict]) -> str:
@@ -808,6 +993,52 @@ def _create_live_job(api_url: str, api_token: str, payload: dict) -> tuple[Optio
         return None, f"Job creation failed: {exc}"
 
 
+def _create_live_session(
+    api_url: str,
+    bootstrap_token: str,
+    ttl_seconds: int = 86400,
+    max_evals: int = 25,
+) -> tuple[Optional[dict], Optional[str]]:
+    headers = {"X-AgentEval-Bootstrap": bootstrap_token}
+    payload = {"ttl_seconds": int(ttl_seconds), "max_evals": int(max_evals)}
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            resp = client.post(f"{api_url.rstrip('/')}/v1/sessions", json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict) and data.get("session_token"):
+                return data, None
+            return None, "Invalid session response from API."
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else "unknown"
+        detail = ""
+        try:
+            if exc.response is not None:
+                detail = (exc.response.text or "").strip()
+        except Exception:
+            detail = ""
+        message = f"Failed to create session ({status})"
+        if detail:
+            message = f"{message}: {detail[:300]}"
+        return None, message
+    except (httpx.HTTPError, ValueError) as exc:
+        return None, f"Failed to create session: {exc}"
+
+
+def _get_session_status(api_url: str, api_token: str) -> Optional[dict]:
+    headers = {"Authorization": f"Bearer {api_token}"}
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            resp = client.get(f"{api_url.rstrip('/')}/v1/sessions/me", headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict):
+                return data
+    except (httpx.HTTPError, ValueError):
+        return None
+    return None
+
+
 def _list_live_runs(api_url: str, api_token: str, limit: int = 20) -> list[dict]:
     headers = {"Authorization": f"Bearer {api_token}"}
     try:
@@ -877,71 +1108,153 @@ def _poll_live_result(
         if status in {"completed", "failed"}:
             return data.get("eval_result"), data.get("raw_output"), data.get("error"), status, data
         time.sleep(1.0)
+
+    # Final fetch prevents false timeout when completion lands right at the boundary.
+    elapsed = time.time() - start
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            resp = client.get(f"{api_url.rstrip('/')}/v1/runs/{job_id}", headers=headers)
+            if resp.status_code != 404:
+                resp.raise_for_status()
+                data = resp.json()
+                status = str(data.get("status") or "running")
+                if on_tick:
+                    on_tick(elapsed, status, data if isinstance(data, dict) else None)
+                if status in {"completed", "failed"}:
+                    return data.get("eval_result"), data.get("raw_output"), data.get("error"), status, data
+    except (httpx.HTTPError, ValueError):
+        pass
     return None, None, None, None, None
 
 
-def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_payload=None, api_url=None, api_token=None):
+def run_evaluation(
+    agent_input,
+    selected_tests,
+    acp_mode,
+    case_study=None,
+    live_payload=None,
+    api_url=None,
+    api_token=None,
+    overlay_placeholder=None,
+):
     """Run evaluation tests with detailed progress."""
 
-    progress_bar = st.progress(0)
-    status_container = st.empty()
-    detail_container = st.empty()
+    progress_bar = None
+    status_container = None
+    detail_container = None
+    if overlay_placeholder is None:
+        progress_bar = st.progress(0)
+        status_container = st.empty()
+        detail_container = st.empty()
 
     if case_study is not None:
-        status_container.markdown("**Loading demo case study...**")
-        detail_container.markdown(f"Case: `{case_study.title}`")
-        progress_bar.progress(0.2)
+        if overlay_placeholder is not None:
+            render_run_overlay(
+                overlay_placeholder,
+                state="Loading",
+                elapsed=0.0,
+                detail=f"Loading demo case study: {case_study.title}",
+                preview_status=None,
+            )
+        else:
+            status_container.markdown("**Loading demo case study...**")
+            detail_container.markdown(f"Case: `{case_study.title}`")
+            progress_bar.progress(0.2)
         time.sleep(0.6)
-        status_container.markdown("**Computing metrics...**")
-        progress_bar.progress(0.6)
+        if overlay_placeholder is not None:
+            render_run_overlay(
+                overlay_placeholder,
+                state="Evaluating",
+                elapsed=0.6,
+                detail="Computing case-study metrics...",
+                preview_status=None,
+            )
+        else:
+            status_container.markdown("**Computing metrics...**")
+            progress_bar.progress(0.6)
         time.sleep(0.6)
         eval_result = evaluate_case_study(case_study)
         scores = build_scores_from_eval(eval_result)
-        progress_bar.progress(1.0)
+        if overlay_placeholder is None:
+            progress_bar.progress(1.0)
         time.sleep(0.6)
+        if overlay_placeholder is not None:
+            overlay_placeholder.empty()
         return scores, None, {}, eval_result, None
     if live_payload and api_url and api_token:
-        status_container.markdown("**Creating live job...**")
-        progress_bar.progress(0.1)
+        if overlay_placeholder is not None:
+            render_run_overlay(
+                overlay_placeholder,
+                state="Creating job",
+                elapsed=0.0,
+                detail="Creating live job and preparing evidence preview...",
+                preview_status="pending",
+            )
+        else:
+            status_container.markdown("**Creating live job...**")
+            progress_bar.progress(0.1)
         job_id, job_error = _create_live_job(api_url, api_token, live_payload)
         if not job_id:
-            status_container.markdown("**Failed to create job.**")
-            progress_bar.progress(1.0)
+            if overlay_placeholder is None:
+                status_container.markdown("**Failed to create job.**")
+                progress_bar.progress(1.0)
+            else:
+                overlay_placeholder.empty()
             return build_scores_from_eval(None), None, {}, None, (job_error or "Failed to create job.")
         st.session_state["last_run_id"] = job_id
 
-        status_container.markdown("**Running live evaluation...**")
-        progress_bar.progress(0.4)
-        default_poll_timeout = float(os.getenv("AGENTEVAL_DEFAULT_LIVE_TIMEOUT_S", "600"))
+        if overlay_placeholder is None:
+            status_container.markdown("**Running live evaluation...**")
+            progress_bar.progress(0.4)
+        default_poll_timeout = float(os.getenv("AGENTEVAL_DEFAULT_LIVE_TIMEOUT_S", "1800"))
         poll_timeout = max(30.0, default_poll_timeout)
         if live_payload:
             try:
                 poll_timeout = max(30.0, float(live_payload.get("timeout_s") or poll_timeout))
             except (TypeError, ValueError):
                 poll_timeout = max(30.0, default_poll_timeout)
-        detail_container.markdown(
-            "Agent browsing in live mode. Typical completion is 2-8 minutes for web tasks."
-        )
+        if overlay_placeholder is None:
+            detail_container.markdown(
+                "Agent browsing in live mode. Typical completion is 2-8 minutes for web tasks."
+            )
+        else:
+            render_run_overlay(
+                overlay_placeholder,
+                state="Running",
+                elapsed=0.0,
+                detail="Agent browsing in live mode. Typical completion is 2-8 minutes for web tasks.",
+                preview_status="pending",
+            )
 
         def _tick(elapsed_s: float, run_state: str, run_data: Optional[dict]) -> None:
-            clipped = min(0.95, 0.4 + (elapsed_s / max(poll_timeout, 1.0)) * 0.5)
-            progress_bar.progress(clipped)
             state_label = {
                 "queued": "Queued",
                 "running": "Running",
                 "completed": "Completed",
                 "failed": "Failed",
             }.get(run_state, "Running")
-            status_container.markdown(f"**Running live evaluation... ({state_label})**")
             preview_label = ""
+            preview_status = None
             if isinstance(run_data, dict):
                 preview_status = run_data.get("preview_status")
                 if preview_status:
                     preview_label = f" • Preview: {preview_status}"
-            detail_container.markdown(
-                f"Phase: **{state_label}** • Elapsed: **{format_duration_human(elapsed_s)}**{preview_label}. "
-                "You can leave this page and check Run History anytime."
-            )
+            if overlay_placeholder is not None:
+                render_run_overlay(
+                    overlay_placeholder,
+                    state=state_label,
+                    elapsed=elapsed_s,
+                    detail="You can keep this tab open; results will appear automatically.",
+                    preview_status=preview_status,
+                )
+            else:
+                clipped = min(0.95, 0.4 + (elapsed_s / max(poll_timeout, 1.0)) * 0.5)
+                progress_bar.progress(clipped)
+                status_container.markdown(f"**Running live evaluation... ({state_label})**")
+                detail_container.markdown(
+                    f"Phase: **{state_label}** • Elapsed: **{format_duration_human(elapsed_s)}**{preview_label}. "
+                    "You can leave this page and check Run History anytime."
+                )
 
         eval_result, raw_output, error, status, run_data = _poll_live_result(
             api_url,
@@ -950,7 +1263,10 @@ def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_
             timeout_s=poll_timeout,
             on_tick=_tick,
         )
-        progress_bar.progress(1.0)
+        if overlay_placeholder is None:
+            progress_bar.progress(1.0)
+        else:
+            overlay_placeholder.empty()
         scores = build_scores_from_eval(eval_result)
         if raw_output:
             st.session_state["case_raw_text"] = raw_output
@@ -964,92 +1280,23 @@ def run_evaluation(agent_input, selected_tests, acp_mode, case_study=None, live_
                 None,
                 {},
                 eval_result,
-                f"Agent timed out after {int(poll_timeout)}s. Try again or increase timeout.",
+                (
+                    f"Agent is still running after {int(poll_timeout)}s. "
+                    "It may complete in the background; check Run History or retry with a higher timeout."
+                ),
             )
         if status == "failed":
             return scores, None, {}, eval_result, (error or "Live run failed.")
         return scores, None, {}, eval_result, None
 
-    status_container.markdown("Live agent evaluation is not configured.")
-    detail_container.markdown("Set an AgentEval API URL to run live jobs.")
-    progress_bar.progress(1.0)
+    if overlay_placeholder is None:
+        status_container.markdown("Live agent evaluation is not configured.")
+        detail_container.markdown("Set an AgentEval API URL to run live jobs.")
+    if progress_bar is not None:
+        progress_bar.progress(1.0)
+    if overlay_placeholder is not None:
+        overlay_placeholder.empty()
     return build_scores_from_eval(None), None, {}, None, "Live mode is not configured."
-
-    current_step = 0
-    x402_response = None
-    acp_results = {}
-
-    # ACP Phases if enabled
-    if acp_mode:
-        for phase, description in ACP_PHASES.items():
-            status_container.markdown(f"""
-            <div style="margin-bottom: 10px;">
-                <span class="acp-phase acp-phase-active">ACP</span>
-                <strong>Phase: {phase}</strong>
-            </div>
-            """, unsafe_allow_html=True)
-            detail_container.markdown(f"{description}")
-            acp_results[phase] = description
-            time.sleep(0.6)
-            current_step += 1
-            progress_bar.progress(current_step / total_steps)
-
-    # Run each test
-    for test in selected_tests:
-        test_def = TEST_DEFINITIONS[test]
-
-        for scenario, detail in test_def["scenarios"]:
-            status_container.markdown(f"""
-            <div style="margin-bottom: 10px;">
-                <span style="font-size: 1.2rem; margin-right: 8px;">{test_def['icon']}</span>
-                <strong>{test}</strong>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Show unauthorized spend alert for safety test
-            if "UNAUTHORIZED SPEND" in scenario:
-                detail_container.markdown(f"""
-                <div class="unauthorized-alert">
-                    ⚠️ <strong>UNAUTHORIZED SPEND DETECTED</strong><br>
-                    Agent attempted to spend $250.00 (Budget limit: $100.00)<br>
-                    <span style="color: #22C55E;">✓ Transaction BLOCKED by safety layer</span>
-                </div>
-                """, unsafe_allow_html=True)
-                time.sleep(1.2)
-            # Show x402 mock for payment test
-            elif test == "x402 Payment Correctness" and "402" in scenario:
-                x402_response, tx_hash, amount = generate_x402_mock()
-                detail_container.markdown(f"""
-                <div class="x402-response">{x402_response}</div>
-                """, unsafe_allow_html=True)
-                time.sleep(1)
-            else:
-                detail_container.markdown(f"{scenario} `{detail}`")
-                time.sleep(0.25 + random.random() * 0.15)
-
-            current_step += 1
-            progress_bar.progress(current_step / total_steps)
-
-    progress_bar.progress(1.0)
-    status_container.markdown("**✓ Evaluation Complete**")
-    detail_container.empty()
-    time.sleep(0.3)
-
-    # Generate scores
-    scores = {}
-    for test in selected_tests:
-        if test == "Price Comparison Accuracy":
-            scores[test] = random.randint(82, 96)
-        elif test == "Negotiation Quality":
-            scores[test] = random.randint(70, 88)
-        elif test == "x402 Payment Correctness":
-            scores[test] = random.randint(85, 98)
-        elif test == "Safety Against Unauthorized Spends":
-            scores[test] = random.randint(78, 95)
-        else:
-            scores[test] = random.randint(70, 95)
-
-    return scores, x402_response, acp_results, None
 
 
 def get_score_class(score):
@@ -1249,7 +1496,6 @@ def main():
     if st.session_state.get("show_results"):
         show_results()
         return
-
     # Main content
     st.markdown("### Evaluate Your Commerce Agent")
     st.markdown("Test your agent's price accuracy before deployment.")
@@ -1257,8 +1503,7 @@ def main():
     if run_error:
         st.error(run_error)
         st.session_state["run_error"] = None
-    run_status_mount = st.empty()
-
+    overlay_placeholder = st.empty()
     # Input form
     col1, col2 = st.columns([2, 1])
 
@@ -1289,48 +1534,184 @@ def main():
                 st.warning("No case studies found.")
         else:
             default_api_url = os.getenv("AGENTEVAL_DEFAULT_API_URL", "")
+            standard_timeout_s = float(os.getenv("AGENTEVAL_DEFAULT_LIVE_TIMEOUT_S", "1800"))
             api_url = st.text_input(
                 "AgentEval API URL",
                 value=default_api_url,
                 placeholder="http://localhost:8000",
                 help="Hosted API that the connector polls for jobs.",
             )
+            if "live_product_name" not in st.session_state:
+                st.session_state["live_product_name"] = "Apple 20W USB-C Power Adapter"
+            if "live_budget_usd" not in st.session_state:
+                st.session_state["live_budget_usd"] = 25.0
+            if "live_allowed_retailers" not in st.session_state:
+                st.session_state["live_allowed_retailers"] = ["Amazon", "Best Buy", "Apple"]
+            if "live_gateway_url_field" not in st.session_state:
+                st.session_state["live_gateway_url_field"] = os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789")
+            if "live_agent_id_field" not in st.session_state:
+                st.session_state["live_agent_id_field"] = "main"
+            if "live_tie_break_bestbuy" not in st.session_state:
+                st.session_state["live_tie_break_bestbuy"] = False
+
+            bootstrap_token = os.getenv("AGENTEVAL_SESSION_BOOTSTRAP_TOKEN", "").strip()
+            ttl_seconds = int(os.getenv("AGENTEVAL_UI_SESSION_TTL_SECONDS", "86400"))
+            max_evals = int(os.getenv("AGENTEVAL_UI_SESSION_MAX_EVALS", "25"))
+            start_disabled = (not api_url) or (not bootstrap_token)
+            if st.button("Start Session", disabled=start_disabled, help="Create a new session token for this test run."):
+                if not api_url:
+                    st.error("Enter AgentEval API URL first.")
+                elif not bootstrap_token:
+                    st.error("Session bootstrap token is not configured on this deployment.")
+                else:
+                    data, err = _create_live_session(api_url, bootstrap_token, ttl_seconds=ttl_seconds, max_evals=max_evals)
+                    if err:
+                        st.error(err)
+                    else:
+                        st.session_state["live_api_token_field"] = str(data.get("session_token", ""))
+                        st.success("Session created. Copy the command below and start the connector.")
+
             api_token = st.text_input(
                 "Session Token",
                 type="password",
+                key="live_api_token_field",
                 help="Session-scoped token used by Streamlit and connector.",
+            )
+
+            connector_gateway_url = st.text_input(
+                "OpenClaw Gateway URL",
+                key="live_gateway_url_field",
+                help="Local OpenClaw Gateway used by your connector.",
             )
             agent_id = st.text_input(
                 "OpenClaw Agent Id",
-                value="main",
+                key="live_agent_id_field",
                 help="Agent id passed to OpenClaw (openclaw:<agent_id>).",
             )
-            product_name = st.text_input("Product name")
-            product_variant = st.text_input("Product variant (optional)")
-            budget_usd = st.number_input("Budget (USD)", min_value=0.0, value=200.0, step=1.0)
+
+            if api_token and api_url:
+                connect_command = (
+                    f'export AGENTEVAL_SESSION_TOKEN="{api_token}"\n'
+                    'export OPENCLAW_GATEWAY_TOKEN="<your_openclaw_gateway_token>"\n'
+                    f'agenteval connect --api-url {api_url.strip()} '
+                    f'--gateway-url {connector_gateway_url.strip()} '
+                    f'--agent-id {(agent_id.strip() or "main")} --timeout {int(standard_timeout_s)}'
+                )
+                st.markdown("**Connector Command**")
+                st.code(connect_command, language="bash")
+                st.caption(
+                    "Paste this command into a separate terminal on the same machine where OpenClaw is running, then return here and click Test Agent."
+                )
+
+            if api_url and api_token:
+                session_info = _get_session_status(api_url, api_token)
+                if session_info:
+                    poll_age_s = seconds_since_iso(session_info.get("last_polled_at"))
+                    connected = poll_age_s is not None and poll_age_s <= 15.0
+                    connector_agent = session_info.get("connector_agent_id") or (agent_id.strip() or "main")
+                    connector_gateway = session_info.get("connector_gateway_url") or connector_gateway_url.strip()
+                    last_poll_human = format_timestamp_human(session_info.get("last_polled_at"))
+                    if poll_age_s is None:
+                        last_poll_label = last_poll_human
+                    else:
+                        last_poll_label = f"{last_poll_human} ({int(poll_age_s)}s ago)"
+                    st.markdown(
+                        f"""
+                        <div class="card">
+                            <div class="card-title">Connector Status</div>
+                            <div class="metric-meta-pill">
+                                Status: <strong>{"Connected" if connected else "Waiting for connector"}</strong>
+                            </div>
+                            <div style="height: 8px;"></div>
+                            <div style="color: var(--text-mid); font-size: 0.9rem;">
+                                Testing: <strong>{html.escape(connector_agent)}</strong> on <strong>{html.escape(connector_gateway)}</strong>
+                            </div>
+                            <div style="color: var(--text-dim); font-size: 0.8rem; margin-top: 6px;">
+                                Last poll: {html.escape(last_poll_label)}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.info("Unable to read session status yet. Start connector and retry.")
+
+            action_col_left, action_col_mid, action_col_right = st.columns([1, 1, 1.3])
+            with action_col_left:
+                reset_clicked = st.button("Reset to defaults")
+            with action_col_mid:
+                video_setup_clicked = st.button("Video-safe setup")
+            with action_col_right:
+                _refresh_spacer, refresh_anchor = st.columns([1, 2])
+                with refresh_anchor:
+                    refresh_clicked = st.button("Refresh status")
+
+            if refresh_clicked:
+                st.rerun()
+
+            if reset_clicked:
+                st.session_state["live_product_name"] = "Apple 20W USB-C Power Adapter"
+                st.session_state["live_budget_usd"] = 25.0
+                st.session_state["live_allowed_retailers"] = ["Amazon", "Best Buy", "Apple"]
+                st.session_state["live_product_variant"] = ""
+                st.session_state["live_prompt_override"] = ""
+                st.session_state["live_tie_break_bestbuy"] = False
+
+            if video_setup_clicked:
+                st.session_state["live_product_name"] = "Apple 20W USB-C Power Adapter"
+                st.session_state["live_budget_usd"] = 25.0
+                st.session_state["live_allowed_retailers"] = ["Best Buy", "Apple"]
+                st.session_state["live_product_variant"] = ""
+                st.session_state["live_prompt_override"] = ""
+                st.session_state["live_tie_break_bestbuy"] = True
+
+            st.markdown("**Test Scenario**")
+            st.caption("AgentEval will run your connected agent against this scenario and evaluate the result.")
+            product_name = st.text_input("Product name", key="live_product_name")
+            product_variant = st.text_input("Product variant (optional)", key="live_product_variant")
+            budget_usd = st.number_input("Budget (USD)", min_value=0.0, step=1.0, key="live_budget_usd")
             allowed_retailers = st.multiselect(
                 "Allowed retailers",
                 ["Amazon", "Best Buy", "Apple"],
-                default=["Amazon", "Best Buy", "Apple"],
+                key="live_allowed_retailers",
             )
-            prompt = st.text_area(
-                "Prompt",
-                placeholder="Find the lowest listed price for ...",
+
+            prompt_template = build_preset_prompt(
+                product_name.strip() if product_name else "Apple 20W USB-C Power Adapter",
+                float(budget_usd),
+                allowed_retailers,
+                tie_break_retailer=("Best Buy" if st.session_state.get("live_tie_break_bestbuy") else None),
             )
-            standard_timeout_s = 600.0
-            fast_mode = st.checkbox(
-                "Fast mode (180s max)",
-                value=False,
-                help="Optimizes for speed. Standard mode allows longer browsing runs.",
-            )
-            st.caption(
-                "Standard mode allows up to 600 seconds for live browsing tasks. "
-                "Fast mode caps runs at 180 seconds."
-            )
-            st.markdown("**Rules**")
-            allow_third_party = st.checkbox("Allow third-party sellers", value=False)
-            allow_refurbished = st.checkbox("Allow refurbished/used", value=False)
-            require_full_set = st.checkbox("Require full set", value=True)
+            prompt = prompt_template
+            with st.expander("Override test instructions (advanced)", expanded=False):
+                prompt_override = st.text_area(
+                    "Instruction override",
+                    key="live_prompt_override",
+                    placeholder=prompt_template,
+                )
+                if prompt_override and prompt_override.strip():
+                    prompt = prompt_override.strip()
+
+            with st.expander("Advanced options", expanded=False):
+                fast_mode = st.checkbox(
+                    "Fast mode (180s max)",
+                    value=False,
+                    help="Optimizes for speed. Standard mode allows longer browsing runs.",
+                )
+                st.caption(
+                    f"Standard mode allows up to {int(standard_timeout_s)} seconds for live browsing tasks. "
+                    "Fast mode caps runs at 180 seconds."
+                )
+                st.markdown("**Rules**")
+                allow_third_party = st.checkbox("Allow third-party sellers", value=False)
+                allow_refurbished = st.checkbox("Allow refurbished/used", value=False)
+                require_full_set = st.checkbox("Require full set", value=True)
+
+            if "allow_third_party" not in locals():
+                allow_third_party = False
+                allow_refurbished = False
+                require_full_set = True
+                fast_mode = False
 
             live_payload = {
                 "product_name": product_name.strip() if product_name else "",
@@ -1353,61 +1734,40 @@ def main():
             st.caption("Connector must be running and polling this AgentEval API.")
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown("**Select Evaluation Tests**")
+        st.markdown("**Evaluation Test**")
         st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-
-        # Test selection with descriptions
-        selected_tests = []
-        supported_tests = {"Price Comparison Accuracy"}
-        for test_name, test_info in TEST_DEFINITIONS.items():
-            col_check, col_info = st.columns([0.08, 0.92])
-            with col_check:
-                default_checked = test_name in supported_tests
-                if st.checkbox(
-                    f"{test_name} checkbox",
-                    value=default_checked,
-                    key=f"check_{test_name}",
-                    label_visibility="collapsed",
-                    disabled=test_name not in supported_tests,
-                ):
-                    selected_tests.append(test_name)
-            with col_info:
-                st.markdown(f"""
-                <div class="test-option">
-                    <div class="test-option-header">
-                        <span class="test-option-name">{test_name}</span>
-                    </div>
-                    <div class="test-option-desc">{test_info['description']}</div>
+        selected_tests = ["Price Comparison Accuracy"]
+        price_test = TEST_DEFINITIONS["Price Comparison Accuracy"]
+        st.markdown(
+            f"""
+            <div class="test-option">
+                <div class="test-option-header">
+                    <span class="test-option-name">Price Comparison Accuracy</span>
                 </div>
-                """, unsafe_allow_html=True)
+                <div class="test-option-desc">{price_test['description']}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         acp_mode = False
         if demo_mode:
             st.caption("Demo mode evaluates only price accuracy from case studies.")
         else:
-            st.caption("Live mode currently evaluates price accuracy only.")
-
-        if acp_mode:
-            st.markdown("""
-            <div style="margin-top: 10px;">
-                <span class="acp-phase">Discovery</span>
-                <span class="acp-phase">Negotiation</span>
-                <span class="acp-phase">Execution</span>
-                <span class="acp-phase">Evaluation</span>
-            </div>
-            """, unsafe_allow_html=True)
+            st.caption("AgentEval will test your agent's price comparison accuracy.")
 
 
     with col2:
+        est_time_label = "~6s" if demo_mode else "~2-10m (depends on browsing)"
         st.markdown(
             f"""
             <div class="align-with-input">
             <div class="card">
                 <div class="card-title">Test Suite Summary</div>
                 <div style="color: var(--text-mid); font-size: 0.9rem; line-height: 1.8;">
-                    <p><strong style="color: var(--text);">{len(selected_tests)}</strong> tests selected</p>
-                    <p>Est. time: <strong style="color: var(--text);">~{len(selected_tests) * 6 + (8 if acp_mode else 0)}s</strong></p>
-                    <p>ACP Mode: <strong style="color: {'var(--success)' if acp_mode else 'var(--text-dim)'};">{'On' if acp_mode else 'Off'}</strong></p>
+                    <p><strong style="color: var(--text);">{len(selected_tests)}</strong> test active</p>
+                    <p>Running: <strong style="color: var(--text);">Price Comparison Accuracy</strong></p>
+                    <p>Est. time: <strong style="color: var(--text);">{est_time_label}</strong></p>
                 </div>
                 <div style="height: 12px;"></div>
                 <div class="card-title">What We Test</div>
@@ -1432,35 +1792,23 @@ def main():
         if not live_payload or not live_payload.get("product_name") or not live_payload.get("prompt"):
             run_disabled = True
 
-    if st.button("Run Evaluation", use_container_width=True, disabled=run_disabled):
+    if st.button("Test Agent", use_container_width=True, disabled=run_disabled):
         agent_input = "demo-agent (case study)" if demo_mode else "openclaw (live)"
-
-        with run_status_mount.container():
-            st.markdown(
-                """
-                <div class="card run-status-shell">
-                    <div class="card-title">Evaluation Status</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.caption("Live phase and elapsed time update here while your agent is running.")
-            scores, x402_response, acp_results, eval_result, run_error = run_evaluation(
-                agent_input,
-                selected_tests,
-                acp_mode,
-                case_study=demo_case if demo_mode else None,
-                live_payload=live_payload if not demo_mode else None,
-                api_url=api_url,
-                api_token=api_token,
-            )
-
+        scores, x402_response, acp_results, eval_result, run_error = run_evaluation(
+            agent_input,
+            selected_tests,
+            acp_mode,
+            case_study=demo_case if demo_mode else None,
+            live_payload=live_payload if not demo_mode else None,
+            api_url=api_url,
+            api_token=api_token,
+            overlay_placeholder=overlay_placeholder,
+        )
         if run_error:
             st.session_state["run_error"] = run_error
-            st.error(run_error)
+            st.rerun()
             return
 
-        # Store results and rerun
         st.session_state["run_error"] = None
         st.session_state["scores"] = scores
         st.session_state["agent_input"] = agent_input
@@ -1475,7 +1823,6 @@ def main():
             st.session_state["live_api_url"] = api_url
             st.session_state["live_api_token"] = api_token
         st.session_state["show_results"] = True
-        time.sleep(0.5)
         st.rerun()
 
 
@@ -1492,6 +1839,9 @@ def show_results():
     live_api_token = st.session_state.get("live_api_token")
     last_run_id = st.session_state.get("last_run_id")
     run_payload = st.session_state.get("last_run_payload") or {}
+    price_score_provisional = False
+    if eval_result is not None:
+        _, price_score_provisional = _derive_price_score(eval_result)
 
     # Calculate overall score
     numeric_scores = [v for v in scores.values() if isinstance(v, (int, float))]
@@ -1570,8 +1920,10 @@ def show_results():
                 badges_html += '<span class="badge badge-danger">✗ Budget Unsafe</span>'
 
         price_score = scores.get("Price Comparison Accuracy")
-        if isinstance(price_score, (int, float)) and price_score >= 85:
+        if isinstance(price_score, (int, float)) and price_score >= 85 and not price_score_provisional:
             badges_html += '<span class="badge badge-success">✓ Price Accurate</span>'
+        elif isinstance(price_score, (int, float)) and price_score_provisional:
+            badges_html += '<span class="badge badge-warning">⚠ Provisional Price Score</span>'
 
         nego_score = scores.get("Negotiation Quality")
         if isinstance(nego_score, (int, float)) and nego_score >= 80:
@@ -1581,7 +1933,7 @@ def show_results():
             badges_html += '<span class="badge badge-success">✓ ACP Compatible</span>'
 
         if overall_score is not None:
-            if overall_score >= 85:
+            if overall_score >= 85 and not price_score_provisional:
                 badges_html += '<span class="badge badge-success">✓ Production Ready</span>'
             elif overall_score >= 70:
                 badges_html += '<span class="badge badge-warning">⚠ Needs Review</span>'
@@ -1627,7 +1979,10 @@ def show_results():
 
         price_score = scores.get("Price Comparison Accuracy")
         if isinstance(price_score, (int, float)):
-            price_score_value = f"{int(price_score)}%"
+            if price_score_provisional:
+                price_score_value = f"{int(price_score)}% (Provisional)"
+            else:
+                price_score_value = f"{int(price_score)}%"
         else:
             price_score_value = "Not evaluated"
 

@@ -170,6 +170,23 @@ class ApiSessionIsolationTests(unittest.TestCase):
         provider_status = data.get("provider_status") or []
         self.assertEqual(provider_status[0].get("state"), "blocked")
 
+    def test_connector_presence_updates_on_poll(self) -> None:
+        _, token = self._new_session()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-AgentEval-Agent-Id": "shopping-agent",
+            "X-AgentEval-Gateway-Url": "http://127.0.0.1:18789",
+        }
+        poll = self.client.get("/v1/jobs/next", headers=headers)
+        self.assertEqual(poll.status_code, 204)
+
+        status = self.client.get("/v1/sessions/me", headers={"Authorization": f"Bearer {token}"})
+        self.assertEqual(status.status_code, 200)
+        body = status.json()
+        self.assertEqual(body.get("connector_agent_id"), "shopping-agent")
+        self.assertEqual(body.get("connector_gateway_url"), "http://127.0.0.1:18789")
+        self.assertIsNotNone(body.get("last_polled_at"))
+
 
 if __name__ == "__main__":
     unittest.main()

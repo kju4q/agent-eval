@@ -52,6 +52,9 @@ class SessionRecord:
     max_evals: int
     evals_used: int
     revoked: bool
+    last_polled_at: Optional[str]
+    connector_agent_id: Optional[str]
+    connector_gateway_url: Optional[str]
 
 
 @dataclass
@@ -114,7 +117,10 @@ class JobStore:
                     expires_at TEXT NOT NULL,
                     max_evals INTEGER NOT NULL,
                     evals_used INTEGER NOT NULL DEFAULT 0,
-                    revoked INTEGER NOT NULL DEFAULT 0
+                    revoked INTEGER NOT NULL DEFAULT 0,
+                    last_polled_at TEXT,
+                    connector_agent_id TEXT,
+                    connector_gateway_url TEXT
                 )
                 """
             )
@@ -182,6 +188,16 @@ class JobStore:
                 if name not in columns:
                     conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {dtype}")
 
+            session_columns = {row["name"] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+            required_session_columns = {
+                "last_polled_at": "TEXT",
+                "connector_agent_id": "TEXT",
+                "connector_gateway_url": "TEXT",
+            }
+            for name, dtype in required_session_columns.items():
+                if name not in session_columns:
+                    conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {dtype}")
+
     def create_session(self, *, ttl_seconds: int, max_evals: int) -> tuple[SessionRecord, str]:
         session_id = secrets.token_hex(16)
         raw_token = secrets.token_hex(32)  # 256-bit
@@ -192,12 +208,41 @@ class JobStore:
             conn.execute(
                 """
                 INSERT INTO sessions (
-                    id, token_hash, created_at, updated_at, expires_at, max_evals, evals_used, revoked
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    id, token_hash, created_at, updated_at, expires_at, max_evals, evals_used, revoked,
+                    last_polled_at, connector_agent_id, connector_gateway_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, token_hash, now, now, expires_at, int(max_evals), 0, 0),
+                (session_id, token_hash, now, now, expires_at, int(max_evals), 0, 0, None, None, None),
             )
         return self.get_session(session_id), raw_token
+
+    def touch_session_connector(
+        self,
+        session_id: str,
+        *,
+        last_polled_at: Optional[str] = None,
+        connector_agent_id: Optional[str] = None,
+        connector_gateway_url: Optional[str] = None,
+    ) -> None:
+        now = _utc_now()
+        polled_at = last_polled_at or now
+        with self._connect() as conn:
+            current = conn.execute(
+                "SELECT connector_agent_id, connector_gateway_url FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if current is None:
+                raise KeyError(session_id)
+            new_agent_id = connector_agent_id if connector_agent_id else current["connector_agent_id"]
+            new_gateway_url = connector_gateway_url if connector_gateway_url else current["connector_gateway_url"]
+            conn.execute(
+                """
+                UPDATE sessions
+                SET updated_at = ?, last_polled_at = ?, connector_agent_id = ?, connector_gateway_url = ?
+                WHERE id = ?
+                """,
+                (now, polled_at, new_agent_id, new_gateway_url, session_id),
+            )
 
     def get_session(self, session_id: str) -> SessionRecord:
         with self._connect() as conn:
@@ -594,6 +639,7 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
 
 
 def _row_to_session(row: sqlite3.Row) -> SessionRecord:
+    keys = row.keys()
     return SessionRecord(
         id=row["id"],
         token_hash=row["token_hash"],
@@ -603,6 +649,9 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
         max_evals=int(row["max_evals"]),
         evals_used=int(row["evals_used"]),
         revoked=bool(row["revoked"]),
+        last_polled_at=row["last_polled_at"] if "last_polled_at" in keys else None,
+        connector_agent_id=row["connector_agent_id"] if "connector_agent_id" in keys else None,
+        connector_gateway_url=row["connector_gateway_url"] if "connector_gateway_url" in keys else None,
     )
 
 

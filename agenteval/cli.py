@@ -84,7 +84,11 @@ def main() -> None:
 
 def run_connector(config: ConnectorConfig) -> None:
     logger = logging.getLogger("agenteval.connector")
-    headers = {"Authorization": f"Bearer {config.api_token}"}
+    headers = {
+        "Authorization": f"Bearer {config.api_token}",
+        "X-AgentEval-Agent-Id": config.agent_id,
+        "X-AgentEval-Gateway-Url": config.gateway_url,
+    }
     logger.info("Connector started")
     logger.info("AgentEval API: %s", config.api_url)
     logger.info("OpenClaw Gateway: %s (agent_id=%s)", config.gateway_url, config.agent_id)

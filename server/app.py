@@ -82,7 +82,15 @@ if allowed_origins:
         allow_origins=allowed_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST"],
-        allow_headers=["Authorization", "Content-Type", "X-AgentEval-Bootstrap", "X-Forwarded-For", "X-Real-IP"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-AgentEval-Bootstrap",
+            "X-Forwarded-For",
+            "X-Real-IP",
+            "X-AgentEval-Agent-Id",
+            "X-AgentEval-Gateway-Url",
+        ],
     )
 
 
@@ -207,6 +215,9 @@ def session_status(session: SessionRecord = Depends(_require_active_session)) ->
         max_evals=session.max_evals,
         evals_used=session.evals_used,
         revoked=session.revoked,
+        last_polled_at=session.last_polled_at,
+        connector_agent_id=session.connector_agent_id,
+        connector_gateway_url=session.connector_gateway_url,
     )
 
 
@@ -247,7 +258,19 @@ def create_job(
 
 
 @app.get("/v1/jobs/next", response_model=JobAssignment)
-def next_job(session: SessionRecord = Depends(_require_active_session)) -> JobAssignment:
+def next_job(
+    session: SessionRecord = Depends(_require_active_session),
+    x_agenteval_agent_id: Optional[str] = Header(default=None),
+    x_agenteval_gateway_url: Optional[str] = Header(default=None),
+) -> JobAssignment:
+    connector_agent_id = x_agenteval_agent_id.strip()[:128] if x_agenteval_agent_id else None
+    connector_gateway_url = x_agenteval_gateway_url.strip()[:512] if x_agenteval_gateway_url else None
+    store.touch_session_connector(
+        session.id,
+        last_polled_at=datetime.now(timezone.utc).isoformat(),
+        connector_agent_id=connector_agent_id,
+        connector_gateway_url=connector_gateway_url,
+    )
     record = store.fetch_next_job(session.id)
     if not record:
         raise HTTPException(status_code=204, detail="No jobs queued.")

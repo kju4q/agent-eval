@@ -30,6 +30,9 @@ class SessionStatusResponse(BaseModel):
     max_evals: int
     evals_used: int
     revoked: bool
+    last_polled_at: Optional[str] = None
+    connector_agent_id: Optional[str] = None
+    connector_gateway_url: Optional[str] = None
 
 
 class CreateJobPayload(BaseModel):

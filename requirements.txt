@@ -1,4 +1,6 @@
-streamlit>=1.30.0
+streamlit>=1.30.0,<2
+tornado>=6.5.5,<7
+anyio>=4.0
 plotly>=5.18.0
 reportlab>=4.0.0
 fastapi>=0.110.0
