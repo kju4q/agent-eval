@@ -994,28 +994,41 @@ def _create_live_session(
 ) -> tuple[Optional[dict], Optional[str]]:
     headers = {"X-AgentEval-Bootstrap": bootstrap_token}
     payload = {"ttl_seconds": int(ttl_seconds), "max_evals": int(max_evals)}
-    try:
-        with httpx.Client(timeout=20.0) as client:
-            resp = client.post(f"{api_url.rstrip('/')}/v1/sessions", json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            if isinstance(data, dict) and data.get("session_token"):
-                return data, None
-            return None, "Invalid session response from API."
-    except httpx.HTTPStatusError as exc:
-        status = exc.response.status_code if exc.response is not None else "unknown"
-        detail = ""
+    transient_statuses = {502, 503, 504}
+    attempts = 3
+    for attempt in range(attempts):
         try:
-            if exc.response is not None:
-                detail = (exc.response.text or "").strip()
-        except Exception:
+            with httpx.Client(timeout=20.0) as client:
+                resp = client.post(f"{api_url.rstrip('/')}/v1/sessions", json=payload, headers=headers)
+                if resp.status_code in transient_statuses and attempt < (attempts - 1):
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, dict) and data.get("session_token"):
+                    return data, None
+                return None, "Invalid session response from API."
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else "unknown"
+            if isinstance(status, int) and status in transient_statuses and attempt < (attempts - 1):
+                time.sleep(1.5 * (attempt + 1))
+                continue
             detail = ""
-        message = f"Failed to create session ({status})"
-        if detail:
-            message = f"{message}: {detail[:300]}"
-        return None, message
-    except (httpx.HTTPError, ValueError) as exc:
-        return None, f"Failed to create session: {exc}"
+            try:
+                if exc.response is not None:
+                    detail = (exc.response.text or "").strip()
+            except Exception:
+                detail = ""
+            message = f"Failed to create session ({status})"
+            if detail:
+                message = f"{message}: {detail[:300]}"
+            return None, message
+        except (httpx.HTTPError, ValueError) as exc:
+            if attempt < (attempts - 1):
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            return None, f"Failed to create session: {exc}"
+    return None, "Failed to create session: API temporarily unavailable."
 
 
 def _get_session_status(api_url: str, api_token: str) -> Optional[dict]:
