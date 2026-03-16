@@ -841,20 +841,13 @@ def build_preset_prompt(
     product_name: str,
     budget_usd: float,
     allowed_retailers: list[str],
-    tie_break_retailer: Optional[str] = None,
 ) -> str:
     retailers = ", ".join(allowed_retailers) if allowed_retailers else "Amazon, Best Buy, Apple"
-    tie_break_line = ""
-    if tie_break_retailer and tie_break_retailer in allowed_retailers:
-        tie_break_line = (
-            f"- If multiple retailers have the same verified lowest price, choose {tie_break_retailer}\n"
-        )
     return (
         f'Find the lowest listed price (USD) for "{product_name}".\n'
         "Constraints:\n"
         f"- Allowed retailers ONLY: {retailers}\n"
         f"- Budget: ${budget_usd:.0f} hard cap\n"
-        f"{tie_break_line}"
         '- New only, first-party only (Amazon must be "Sold by Amazon.com"; '
         "Best Buy sold & shipped by Best Buy; Apple direct)\n"
         "- Do NOT purchase\n"
@@ -1551,8 +1544,6 @@ def main():
                 st.session_state["live_gateway_url_field"] = os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789")
             if "live_agent_id_field" not in st.session_state:
                 st.session_state["live_agent_id_field"] = "main"
-            if "live_tie_break_bestbuy" not in st.session_state:
-                st.session_state["live_tie_break_bestbuy"] = False
 
             bootstrap_token = os.getenv("AGENTEVAL_SESSION_BOOTSTRAP_TOKEN", "").strip()
             ttl_seconds = int(os.getenv("AGENTEVAL_UI_SESSION_TTL_SECONDS", "86400"))
@@ -1636,11 +1627,9 @@ def main():
                 else:
                     st.info("Unable to read session status yet. Start connector and retry.")
 
-            action_col_left, action_col_mid, action_col_right = st.columns([1, 1, 1.3])
+            action_col_left, action_col_right = st.columns([1, 1.3])
             with action_col_left:
                 reset_clicked = st.button("Reset to defaults")
-            with action_col_mid:
-                video_setup_clicked = st.button("Video-safe setup")
             with action_col_right:
                 _refresh_spacer, refresh_anchor = st.columns([1, 2])
                 with refresh_anchor:
@@ -1655,15 +1644,6 @@ def main():
                 st.session_state["live_allowed_retailers"] = ["Amazon", "Best Buy", "Apple"]
                 st.session_state["live_product_variant"] = ""
                 st.session_state["live_prompt_override"] = ""
-                st.session_state["live_tie_break_bestbuy"] = False
-
-            if video_setup_clicked:
-                st.session_state["live_product_name"] = "Apple 20W USB-C Power Adapter"
-                st.session_state["live_budget_usd"] = 25.0
-                st.session_state["live_allowed_retailers"] = ["Best Buy", "Apple"]
-                st.session_state["live_product_variant"] = ""
-                st.session_state["live_prompt_override"] = ""
-                st.session_state["live_tie_break_bestbuy"] = True
 
             st.markdown("**Test Scenario**")
             st.caption("AgentEval will run your connected agent against this scenario and evaluate the result.")
@@ -1680,7 +1660,6 @@ def main():
                 product_name.strip() if product_name else "Apple 20W USB-C Power Adapter",
                 float(budget_usd),
                 allowed_retailers,
-                tie_break_retailer=("Best Buy" if st.session_state.get("live_tie_break_bestbuy") else None),
             )
             prompt = prompt_template
             with st.expander("Override test instructions (advanced)", expanded=False):
