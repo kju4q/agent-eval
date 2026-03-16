@@ -992,16 +992,32 @@ def _create_live_session(
     ttl_seconds: int = 86400,
     max_evals: int = 25,
 ) -> tuple[Optional[dict], Optional[str]]:
+    api_base = api_url.strip().rstrip("/")
+    if not api_base:
+        return None, "AgentEval API URL is required."
+
     headers = {"X-AgentEval-Bootstrap": bootstrap_token}
     payload = {"ttl_seconds": int(ttl_seconds), "max_evals": int(max_evals)}
     transient_statuses = {502, 503, 504}
-    attempts = 3
+    attempts = 5
     for attempt in range(attempts):
         try:
             with httpx.Client(timeout=20.0) as client:
-                resp = client.post(f"{api_url.rstrip('/')}/v1/sessions", json=payload, headers=headers)
+                health = client.get(f"{api_base}/healthz")
+                if health.status_code in transient_statuses and attempt < (attempts - 1):
+                    time.sleep(1.2 * (attempt + 1))
+                    continue
+                if health.status_code == 404:
+                    return None, "API URL appears incorrect. Use your API service URL, not the UI URL."
+                if health.status_code >= 500 and attempt < (attempts - 1):
+                    time.sleep(1.2 * (attempt + 1))
+                    continue
+                if health.status_code >= 500:
+                    return None, f"API health check failed ({health.status_code}). Try again in a few seconds."
+
+                resp = client.post(f"{api_base}/v1/sessions", json=payload, headers=headers)
                 if resp.status_code in transient_statuses and attempt < (attempts - 1):
-                    time.sleep(1.5 * (attempt + 1))
+                    time.sleep(1.2 * (attempt + 1))
                     continue
                 resp.raise_for_status()
                 data = resp.json()
@@ -1011,8 +1027,13 @@ def _create_live_session(
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code if exc.response is not None else "unknown"
             if isinstance(status, int) and status in transient_statuses and attempt < (attempts - 1):
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(1.2 * (attempt + 1))
                 continue
+            if status == 401:
+                return None, (
+                    "Session bootstrap auth failed (401). "
+                    "Verify AGENTEVAL_SESSION_BOOTSTRAP_TOKEN matches on UI and API services."
+                )
             detail = ""
             try:
                 if exc.response is not None:
@@ -1021,11 +1042,14 @@ def _create_live_session(
                 detail = ""
             message = f"Failed to create session ({status})"
             if detail:
-                message = f"{message}: {detail[:300]}"
+                # Avoid dumping full HTML proxy pages into UI errors.
+                if "<html" in detail.lower():
+                    detail = "upstream proxy returned HTML error page"
+                message = f"{message}: {detail[:220]}"
             return None, message
         except (httpx.HTTPError, ValueError) as exc:
             if attempt < (attempts - 1):
-                time.sleep(1.5 * (attempt + 1))
+                time.sleep(1.2 * (attempt + 1))
                 continue
             return None, f"Failed to create session: {exc}"
     return None, "Failed to create session: API temporarily unavailable."
