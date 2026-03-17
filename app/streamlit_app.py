@@ -802,11 +802,37 @@ def format_timestamp_human(value: Optional[str]) -> str:
         year = dt_local.year
         hour_12 = dt_local.hour % 12 or 12
         time_str = f"{hour_12}:{dt_local.minute:02d} {'AM' if dt_local.hour < 12 else 'PM'}"
-        tz_str = dt_local.strftime("%Z")
-        suffix = f" {tz_str}" if tz_str else ""
-        return f"{month} {day}, {year} at {time_str}{suffix}"
+        return f"{month} {day}, {year} at {time_str}"
     except Exception:
         return value
+
+
+def format_revalidation_skip_reason(reason: Optional[str]) -> str:
+    if not reason:
+        return "None"
+    mapping = {
+        "final_revalidation_skipped_no_clear_choice": "Skipped: no clear agent choice parsed.",
+        "final_revalidation_skipped_preview_unavailable": "Skipped: preview evidence was unavailable.",
+        "final_revalidation_skipped_fresh_preview": "Skipped: recent preview evidence was reused.",
+        "final_revalidation_skipped_provider_disabled": "Skipped: provider is disabled.",
+        "final_revalidation_skipped_provider_blocked": "Skipped: provider is temporarily blocked.",
+        "final_revalidation_skipped_timeout": "Skipped: revalidation timed out.",
+        "final_revalidation_skipped_error": "Skipped: revalidation encountered an error.",
+    }
+    return mapping.get(reason, reason.replace("_", " ").strip().capitalize())
+
+
+def format_provider_detail(provider: str, state: str, detail: Optional[str]) -> Optional[str]:
+    if not detail:
+        return detail
+    provider_norm = provider.strip().lower()
+    state_norm = state.strip().lower()
+    detail_text = str(detail)
+    if provider_norm == "dataforseo" and state_norm == "disabled":
+        return "Amazon evidence provider is not configured."
+    if provider_norm == "bestbuy" and state_norm == "disabled":
+        return "Best Buy evidence provider is not configured."
+    return detail_text
 
 
 def format_duration_human(value: Optional[float]) -> str:
@@ -925,7 +951,7 @@ def render_provider_chips(provider_status: list[dict]) -> str:
             state_label = state.upper()
 
         detail_bits = []
-        detail = item.get("detail")
+        detail = format_provider_detail(provider, state, item.get("detail"))
         if detail:
             detail_bits.append(html.escape(str(detail)))
         calls_today = item.get("calls_today")
@@ -2021,7 +2047,7 @@ def show_results():
         preview_state_safe = html.escape(preview_status or "N/A")
         preview_at_safe = html.escape(format_timestamp_human(preview_at))
         revalidated_at_safe = html.escape(format_timestamp_human(revalidated_at))
-        revalidation_skip_safe = html.escape(revalidation_skipped_reason or "None")
+        revalidation_skip_safe = html.escape(format_revalidation_skip_reason(revalidation_skipped_reason))
 
         st.markdown(
             f"""

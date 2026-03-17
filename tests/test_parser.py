@@ -50,6 +50,23 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed.chosen.retailer, "Best Buy")
         self.assertEqual(parsed.chosen.price_usd, 19.00)
 
+    def test_parse_markdown_inline_chosen_with_url_next_line(self) -> None:
+        raw = """
+        **Chosen retailer:** **Best Buy — $14.99**
+        **URL:** https://www.bestbuy.com/site/apple-20w-usb-c-power-adapter-white/6437121.p?skuId=6437121
+        **Within budget ($25 hard cap)?** **Yes**
+        """
+        parsed = parse_agent_output(raw)
+        self.assertIsNotNone(parsed.chosen)
+        assert parsed.chosen is not None
+        self.assertEqual(parsed.chosen.retailer, "Best Buy")
+        self.assertEqual(parsed.chosen.price_usd, 14.99)
+        self.assertEqual(
+            parsed.chosen.url,
+            "https://www.bestbuy.com/site/apple-20w-usb-c-power-adapter-white/6437121.p?skuId=6437121",
+        )
+        self.assertTrue(parsed.within_budget)
+
 
 if __name__ == "__main__":
     unittest.main()

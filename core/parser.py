@@ -12,6 +12,10 @@ _RE_CHOSEN = re.compile(
     r"chosen retailer\s*\+\s*price\s*\+\s*url\s*:\s*(.+)",
     re.IGNORECASE,
 )
+_RE_CHOSEN_HEADER = re.compile(
+    r"^chosen retailer(?:\s*\+\s*price\s*\+\s*url)?\s*[:\-]?\s*(.*)$",
+    re.IGNORECASE,
+)
 _RE_CHOSEN_SECTION = re.compile(
     r"chosen retailer",
     re.IGNORECASE,
@@ -205,14 +209,23 @@ def _parse_chosen_offer_by_lines(lines: list[str]) -> Optional[ParsedOffer]:
 
 def _parse_chosen_block(lines: list[str], idx: int) -> Optional[ParsedOffer]:
     window = lines[idx: idx + 6]
-    # Drop the header line
-    candidates = [_strip_markdown(line) for line in window[1:]]
+    header_line = _strip_markdown(window[0])
+    candidates: list[str] = []
+    header_match = _RE_CHOSEN_HEADER.match(_strip_leading_index(header_line))
+    if header_match:
+        header_payload = header_match.group(1).strip()
+        if header_payload:
+            candidates.append(header_payload)
+    candidates.extend(_strip_markdown(line) for line in window[1:])
+
     for line in candidates:
         if "no valid choice" in line.lower():
             return None
+
+    for line in candidates:
         retailer, price_value = _extract_retailer_price(line)
-        url = _extract_url(line, candidates)
-        if retailer or price_value or url:
+        if retailer or price_value:
+            url = _extract_url(line, candidates)
             return ParsedOffer(
                 retailer=retailer or "Unknown",
                 price_usd=price_value,
@@ -223,6 +236,7 @@ def _parse_chosen_block(lines: list[str], idx: int) -> Optional[ParsedOffer]:
                 listing_id=None,
                 listing_id_type=None,
             )
+
     return None
 
 
@@ -273,11 +287,10 @@ def _extract_url(line: str, candidates: list[str]) -> Optional[str]:
 
 def _strip_markdown(line: str) -> str:
     text = line.strip()
-    if text.startswith(("-", "*", "•")):
-        text = text[1:].strip()
     text = text.replace("**", "")
     text = text.replace("`", "")
-    return text
+    text = re.sub(r"^[-*•]+\s*", "", text)
+    return text.strip()
 
 
 def _strip_leading_index(line: str) -> str:
