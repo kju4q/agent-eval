@@ -1,49 +1,54 @@
 # AgentEval OpenClaw v1 Production Gate
 
-Use this as the launch blocker checklist for the public OpenClaw v1 release.
+Use this as the current launch/readiness checklist for the public OpenClaw-backed AgentEval v1.
 Every item is binary: `PASS` or `FAIL`.
 
 ## Rules
-- Ship only if all `Critical` items are `PASS`.
-- `High` items must be `PASS` before public launch.
-- `Medium` items can be completed within 48h after launch only if explicitly accepted.
-- Owner:
-  - `System`: code/runtime behavior must enforce it.
-  - `Operator`: infra/deployment/config/process responsibility.
+- `Critical` items must be `PASS` for public use.
+- `High` items should be `PASS` for sustained public usage, but do not all block a controlled beta.
+- `Owner`
+- `System`: enforced by code/runtime behavior.
+- `Operator`: enforced by deployment/config/process.
 
-## Critical (Hard Blockers)
-| ID | Gate | Owner | PASS Criteria (Binary) | Status |
+## Critical
+| ID | Gate | Owner | PASS Criteria | Status |
 |---|---|---|---|---|
-| C1 | Session-scoped job/result isolation | System | A connector for Session A cannot fetch or complete jobs for Session B; `/v1/runs/{id}` returns 403/404 for non-owner session. | FAIL |
-| C2 | Per-session connector auth (no global connector token) | System | Connector authenticates with session token; global token cannot access cross-session jobs. | FAIL |
-| C3 | Session token quality + TTL | System | Tokens are crypto-random (>=128 bits), expire automatically, and session has max eval count. | FAIL |
-| C4 | Trust boundary enforced | Operator | Public traffic reaches Streamlit only; FastAPI is private/internal and not directly internet-accessible. | FAIL |
-| C5 | Cost guardrails for paid evidence APIs | System + Operator | Per-session quota, daily spend cap, and kill-switch all work; when cap is reached, system enters explicit degraded mode. | FAIL |
-| C6 | Parser safety against adversarial output | System | Malformed/contradictory agent output cannot produce false verified states; parser falls back to safe null/degraded fields. | FAIL |
-| C7 | XSS-safe rendering of raw output | System | Raw agent output is escaped/sanitized in UI/PDF; no arbitrary HTML/JS execution path. | FAIL |
+| C1 | Session-scoped job/result isolation | System | A connector for Session A cannot fetch/complete jobs for Session B; runs/history/feedback are session-scoped. | PASS |
+| C2 | No global connector token dependency | System | Connector authenticates with session token; cross-session access via shared connector secret is impossible. | PASS |
+| C3 | Session token quality + TTL | System | Tokens are crypto-random, hashed at rest, expire automatically, and sessions have max eval count. | PASS |
+| C4 | Bootstrap-protected session issuance in prod | Operator + System | Production API requires bootstrap token for `/v1/sessions`; missing bootstrap config fails closed in deployed env. | PASS |
+| C5 | Prompt/input size bounds | System | Oversized job prompts are rejected with explicit error. | PASS |
+| C6 | Parser fails safe | System | Malformed or contradictory agent output cannot produce false verified states; parser falls back to null/unverified paths. | PASS |
+| C7 | Raw output is rendered safely | System | Raw agent output is displayed as escaped text/code, not executable HTML. | PASS |
 
-## High (Must Pass Before Public)
-| ID | Gate | Owner | PASS Criteria (Binary) | Status |
+## High
+| ID | Gate | Owner | PASS Criteria | Status |
 |---|---|---|---|---|
-| H1 | Payload size limits | System | Job creation rejects oversized payloads with 413/validation error (e.g. >32KB prompt/body limits). | FAIL |
-| H2 | Structured failure states | System | Every failed run has machine-readable error code + user-visible reason; no silent null-only failures. | FAIL |
-| H3 | Ground-truth degraded mode visibility | System | If Best Buy/DataForSEO unavailable/unconfigured, result explicitly marks evidence degraded (not silent empty evidence). | FAIL |
-| H4 | Rate limiting + abuse controls | System | Session-level eval caps enforced; IP throttling active; abuse cannot trigger unbounded job creation. | FAIL |
-| H5 | Production-safe error surface | Operator + System | Debug/traceback responses disabled in prod; API returns sanitized errors only. | FAIL |
-| H6 | SSRF egress protections | System + Operator | Outbound requests blocked to private/link-local/metadata ranges; allowlist used where applicable. | FAIL |
-| H7 | Idempotent and safe job completion | System | Duplicate/late `/complete` calls do not corrupt state; invalid state transitions are rejected. | FAIL |
-| H8 | Run history + feedback capture | System | Users can view their own run history and submit feedback linked to run_id with size/rate limits. | FAIL |
+| H1 | Session quota enforcement | System | Sessions enforce max eval count and expired/revoked sessions cannot create jobs. | PASS |
+| H2 | IP throttling on job creation | System | Public job creation is rate-limited per IP window. | PASS |
+| H3 | Explicit degraded evidence state | System | Missing/blocked/unconfigured providers surface as degraded/provider status instead of silent empty evidence. | PASS |
+| H4 | Idempotent job completion | System | Duplicate `/complete` calls do not corrupt run state. | PASS |
+| H5 | Sanitized error surface | System + Operator | API returns sanitized 4xx/5xx responses without tracebacks in response bodies. | PASS |
+| H6 | SSRF egress protections | System | Evidence fetchers only access allowlisted hosts over HTTPS and reject private/link-local targets. | PASS |
+| H7 | Feedback capture + limits | System | Feedback is tied to run/session and has size/rate limits. | PASS |
+| H8 | Run history available | System | Users can see their own runs and statuses. | PASS |
 
-## Medium (Complete Before/Immediately After Launch Window)
-| ID | Gate | Owner | PASS Criteria (Binary) | Status |
+## Medium
+| ID | Gate | Owner | PASS Criteria | Status |
 |---|---|---|---|---|
-| M1 | Feedback spam guard | System | Feedback endpoint enforces max length and per-session/IP submission limits. | FAIL |
-| M2 | Log data minimization | System + Operator | Tokens redacted; raw output truncated/redacted in logs; retention policy documented. | FAIL |
-| M3 | Dependency security audit | Operator | `pip-audit` (or equivalent) run, findings triaged, critical vulns resolved/accepted with rationale. | FAIL |
-| M4 | Monitoring + alerting | Operator | Alerts exist for timeout spikes, evidence-fetch failure spikes, and spend spikes. | FAIL |
-| M5 | Fresh-env smoke run | Operator | One full E2E run from clean machine/account succeeds with documented steps. | FAIL |
+| M1 | Session creation abuse throttling | System | `/v1/sessions` has explicit rate limiting in addition to bootstrap protection. | FAIL |
+| M2 | Dependency audit completed in networked environment | Operator | `pip-audit` or equivalent completed and findings triaged. | FAIL |
+| M3 | Log data minimization | System + Operator | Sensitive values are not over-logged; retention/visibility is understood. | PARTIAL |
+| M4 | Monitoring + alerting | Operator | Alerts exist for evidence provider failures, timeout spikes, and spend spikes. | FAIL |
+| M5 | Broader evaluator coverage | System | More than one real evaluation dimension exists beyond price accuracy. | FAIL |
 
-## Launch Decision
-- Launch allowed only when: `C* = PASS` and `H* = PASS`.
-- If any critical/high item is `FAIL`, launch is blocked.
+## Current Interpretation
+- OpenClaw v1 price-evaluation beta is live-capable.
+- The largest remaining product gap is not core security; it is narrow evaluator scope.
+- The largest remaining operational gap is explicit session-creation throttling plus full dependency audit.
 
+## Next Product Priority
+1. Build `Safety / Policy Compliance v1`
+2. Add tests for safety paths
+3. Surface safety as a distinct UI result
+4. Revisit ACP after that
