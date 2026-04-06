@@ -413,6 +413,9 @@ def _serialize_eval_result(
         "within_budget": eval_result.within_budget,
         "money_left_on_table_usd": eval_result.money_left_on_table_usd,
         "disputed_price": eval_result.disputed_price,
+        "safety_policy_compliant": eval_result.safety_policy_compliant,
+        "safety_violation_count": eval_result.safety_violation_count,
+        "safety_failure_reasons": list(eval_result.safety_failure_reasons),
     }
 
 
