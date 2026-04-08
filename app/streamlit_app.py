@@ -768,12 +768,19 @@ def build_scores_from_eval(eval_result):
     if eval_result is None:
         return {}
     price_score, _is_provisional = _derive_price_score(eval_result)
+    safety_compliant = _get_eval_field(eval_result, "safety_policy_compliant")
+    if safety_compliant is True:
+        safety_score = 100
+    elif safety_compliant is False:
+        safety_score = 0
+    else:
+        safety_score = None
 
     return {
         "Price Comparison Accuracy": price_score,
         "Negotiation Quality": None,
         "x402 Payment Correctness": None,
-        "Safety Against Unauthorized Spends": None,
+        "Safety Against Unauthorized Spends": safety_score,
     }
 
 
@@ -2048,6 +2055,9 @@ def show_results():
         preview_at_safe = html.escape(format_timestamp_human(preview_at))
         revalidated_at_safe = html.escape(format_timestamp_human(revalidated_at))
         revalidation_skip_safe = html.escape(format_revalidation_skip_reason(revalidation_skipped_reason))
+        safety_policy_compliant = _get_eval_field(eval_result, "safety_policy_compliant")
+        safety_violation_count = _get_eval_field(eval_result, "safety_violation_count") or 0
+        safety_failure_reasons = _get_eval_field(eval_result, "safety_failure_reasons") or []
 
         st.markdown(
             f"""
@@ -2115,7 +2125,48 @@ def show_results():
             unsafe_allow_html=True,
         )
 
-    # Row 3: Raw Agent Output (full width, below price evaluation)
+        if safety_policy_compliant is True:
+            safety_state_label = "PASS"
+            safety_badge_class = "badge badge-success"
+            safety_title = "Policy Compliant"
+            safety_summary = "AgentEval did not detect a spend or policy violation in the chosen offer."
+            safety_details_html = '<div style="color: var(--text-dim); font-size: 0.85rem;">No policy violations detected.</div>'
+        elif safety_policy_compliant is False:
+            safety_state_label = "FAIL"
+            safety_badge_class = "badge badge-danger"
+            safety_title = "Policy Violation"
+            safety_summary = f"Detected {int(safety_violation_count)} policy violation{'s' if int(safety_violation_count) != 1 else ''}."
+            detail_items = []
+            for reason in safety_failure_reasons:
+                detail_items.append(
+                    f'<div style="color: var(--text-mid); font-size: 0.85rem; margin-top: 8px;">- {html.escape(str(reason))}</div>'
+                )
+            safety_details_html = "".join(detail_items) if detail_items else (
+                '<div style="color: var(--text-dim); font-size: 0.85rem;">No violation details available.</div>'
+            )
+        else:
+            safety_state_label = "N/A"
+            safety_badge_class = "badge badge-warning"
+            safety_title = "Not Evaluated"
+            safety_summary = "Safety / policy compliance could not be determined for this run."
+            safety_details_html = '<div style="color: var(--text-dim); font-size: 0.85rem;">Run did not produce enough verified signal to evaluate compliance.</div>'
+
+        st.markdown(
+            f"""
+            <div class="card">
+                <div class="card-title">Safety / Policy Compliance</div>
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px; flex-wrap:wrap;">
+                    <div style="font-size:1.15rem; font-weight:700; color: var(--text);">{html.escape(safety_title)}</div>
+                    <span class="{safety_badge_class}">{html.escape(safety_state_label)}</span>
+                </div>
+                <div style="color: var(--text-mid); font-size: 0.92rem; margin-bottom: 12px;">{html.escape(safety_summary)}</div>
+                {safety_details_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # Row 3: Raw Agent Output (full width, below safety)
     st.markdown('<div class="card"><div class="card-title">Raw Agent Output</div>', unsafe_allow_html=True)
     with st.expander("Show raw output", expanded=False):
         case_raw = st.session_state.get("case_raw_text")
